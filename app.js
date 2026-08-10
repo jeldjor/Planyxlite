@@ -36,10 +36,35 @@ function optimizeStops(stops,start,end){
   while(improved&&loops++<50){improved=false;let base=routeDistance(order,start,end);for(let i=0;i<order.length-1;i++){for(let j=i+1;j<order.length;j++){const cand=[...order.slice(0,i),...order.slice(i,j+1).reverse(),...order.slice(j+1)];const nd=routeDistance(cand,start,end);if(nd+0.05<base){order.splice(0,order.length,...cand);base=nd;improved=true}}}}
   return order;
 }
-async function tomtomJson(url){const r=await fetch(url);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.errorText||j?.detailedError?.message||`TomTom fout (${r.status})`);return j}
-async function geocodeAddress(query,country,key){const u=new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);u.searchParams.set('key',key);u.searchParams.set('limit','1');const cc=countryCode(country);if(cc)u.searchParams.set('countrySet',cc);const j=await tomtomJson(u);const p=j.results?.[0]?.position;if(!p)throw new Error(`Adres niet gevonden: ${query}`);return {lat:Number(p.lat),lon:Number(p.lon),freeform:j.results?.[0]?.address?.freeformAddress||query}}
-async function routeLeg(a,b,key){const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${a.lat},${a.lon}:${b.lat},${b.lon}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','true');u.searchParams.set('routeType','fastest');const j=await tomtomJson(u);const s=j.routes?.[0]?.summary;if(!s)throw new Error('Geen route gevonden');return {km:Number(s.lengthInMeters||0)/1000,min:Number(s.travelTimeInSeconds||0)/60}}
-async function mapLimit(items,limit,fn){const out=new Array(items.length);let n=0;const workers=Array.from({length:Math.min(limit,items.length)},async()=>{while(n<items.length){const i=n++;out[i]=await fn(items[i],i)}});await Promise.all(workers);return out}
+const GEO_CACHE='planyx-lite-geocache-v1';
+let lastTomTomCall=0;
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function loadGeoCache(){try{return JSON.parse(localStorage.getItem(GEO_CACHE)||'{}')}catch{return {}}}
+function saveGeoCache(cache){try{localStorage.setItem(GEO_CACHE,JSON.stringify(cache))}catch{}}
+async function tomtomJson(url,{retries=4}={}){
+  for(let attempt=0;;attempt++){
+    const gap=375-(Date.now()-lastTomTomCall);if(gap>0)await sleep(gap);lastTomTomCall=Date.now();
+    const r=await fetch(url);const text=await r.text();let j={};try{j=text?JSON.parse(text):{}}catch{}
+    if(r.ok)return j;
+    const msg=j.errorText||j?.detailedError?.message||text.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||`TomTom fout (${r.status})`;
+    const limited=r.status===429||/rate limit|too many requests|permitted rate/i.test(msg);
+    if(limited&&attempt<retries){const retryAfter=Number(r.headers.get('Retry-After'));await sleep(Number.isFinite(retryAfter)&&retryAfter>0?retryAfter*1000:1200*Math.pow(2,attempt));continue}
+    if(limited)throw new Error('TomTom rate-limit bereikt. Wacht ongeveer een minuut en probeer opnieuw. Planyx-lite bewaart reeds gevonden adressen, zodat de volgende poging veel minder aanvragen doet.');
+    throw new Error(msg||`TomTom fout (${r.status})`);
+  }
+}
+async function geocodeAddress(query,country,key){
+  const cache=loadGeoCache(),cacheKey=`${countryCode(country)}|${String(query).trim().toLowerCase()}`;if(cache[cacheKey])return cache[cacheKey];
+  const u=new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);u.searchParams.set('key',key);u.searchParams.set('limit','1');const cc=countryCode(country);if(cc)u.searchParams.set('countrySet',cc);const j=await tomtomJson(u);const p=j.results?.[0]?.position;if(!p)throw new Error(`Adres niet gevonden: ${query}`);
+  const found={lat:Number(p.lat),lon:Number(p.lon),freeform:j.results?.[0]?.address?.freeformAddress||query};cache[cacheKey]=found;saveGeoCache(cache);return found
+}
+async function routeWholeDay(start,stops,end,key,optimize=true){
+  const points=[start,...stops.map(s=>s.position),end];if(points.length<2)throw new Error('Geen routepunten gevonden.');if(points.length-2>150)throw new Error('Een dag bevat meer dan 150 stops; splits deze dag op.');
+  const locs=points.map(p=>`${p.lat},${p.lon}`).join(':');const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','true');u.searchParams.set('routeType','fastest');u.searchParams.set('routeRepresentation','summaryOnly');if(optimize&&stops.length>1)u.searchParams.set('computeBestOrder','true');
+  const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('Geen route gevonden.');
+  let ordered=[...stops];if(optimize&&Array.isArray(route.optimizedWaypoints)&&route.optimizedWaypoints.length===stops.length){ordered=[...stops];for(const w of route.optimizedWaypoints){if(Number.isInteger(w.providedIndex)&&Number.isInteger(w.optimizedIndex)&&stops[w.providedIndex])ordered[w.optimizedIndex]=stops[w.providedIndex]}}
+  return {ordered,summary:route.summary,legs:route.legs||[]};
+}
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
 function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Route(s) genereren'}
 
@@ -62,7 +87,7 @@ async function generateAll(){
   try{
     setBusy('Startadres controleren…');state.startPoint=await geocodeAddress(start,'',key);state.endPoint=same?state.startPoint:await geocodeAddress(end,'',key);
     const ungeocoded=state.stops.filter(s=>!s.position);let done=0;
-    await mapLimit(ungeocoded,3,async s=>{setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key)});
+    for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key);saveState()}
     buildDayShells();const dates=Object.keys(state.days).sort();
     for(let di=0;di<dates.length;di++){const date=dates[di];setBusy(`Route ${di+1}/${dates.length} optimaliseren…`);await optimizeDay(date,key,true)}
     saveState();render();toast('Alle routes zijn klaar.');
@@ -70,11 +95,16 @@ async function generateAll(){
 }
 async function optimizeDay(date,key,withLive){
   const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position);
-  const localStart=visited.length?visited[visited.length-1].position:state.startPoint;const optimized=optimizeStops(remaining,localStart,state.endPoint);const combined=[...visited,...optimized];combined.forEach((s,i)=>s.order=i+1);
-  let totalKm=0,totalMin=0,p=state.startPoint;let liveOk=withLive&&!!key;
-  if(liveOk){for(let i=0;i<combined.length;i++){setBusy(`Traject ${i+1}/${combined.length+1} berekenen…`);const leg=await routeLeg(p,combined[i].position,key);combined[i].legKm=leg.km;combined[i].legMin=leg.min;totalKm+=leg.km;totalMin+=leg.min;p=combined[i].position}if(combined.length){const back=await routeLeg(p,state.endPoint,key);totalKm+=back.km;totalMin+=back.min}}
-  else{p=state.startPoint;for(const s of combined){const km=hav(p,s.position);s.legKm=km;s.legMin=null;totalKm+=km;p=s.position}totalKm+=hav(p,state.endPoint)}
-  state.days[date]={date,generated:true,summary:{km:totalKm,min:liveOk?totalMin:null,live:liveOk,updatedAt:new Date().toISOString()}};
+  let combined=[...visited];let totalKm=0,totalMin=null,liveOk=withLive&&!!key;
+  if(liveOk&&remaining.length){
+    setBusy(`${formatDay(date,true)} · optimale route berekenen…`);const routeStart=visited.length?visited[visited.length-1].position:state.startPoint;const result=await routeWholeDay(routeStart,remaining,state.endPoint,key,true);combined=[...visited,...result.ordered];
+    const routeKm=Number(result.summary.lengthInMeters||0)/1000,routeMin=Number(result.summary.travelTimeInSeconds||0)/60;
+    if(visited.length){let p=state.startPoint;for(const s of visited){const km=hav(p,s.position);s.legKm=km;s.legMin=null;totalKm+=km;p=s.position}totalKm+=routeKm}else{totalKm=routeKm;totalMin=routeMin}
+    const legs=result.legs||[];result.ordered.forEach((s,i)=>{const leg=legs[i]?.summary;s.legKm=leg?Number(leg.lengthInMeters||0)/1000:null;s.legMin=leg?Number(leg.travelTimeInSeconds||0)/60:null});
+  }else{
+    const localStart=visited.length?visited[visited.length-1].position:state.startPoint;const optimized=optimizeStops(remaining,localStart,state.endPoint);combined=[...visited,...optimized];let p=state.startPoint;for(const s of combined){const km=hav(p,s.position);s.legKm=km;s.legMin=null;totalKm+=km;p=s.position}if(combined.length)totalKm+=hav(p,state.endPoint);liveOk=false
+  }
+  combined.forEach((s,i)=>s.order=i+1);state.days[date]={date,generated:true,summary:{km:totalKm,min:totalMin,live:liveOk,updatedAt:new Date().toISOString()}};
 }
 function reoptimizeCurrent(){const d=state.selectedDay;if(!d)return;try{optimizeDay(d,'',false);saveState();render();toast('Resterende stops opnieuw geordend.')}catch(e){toast(e.message)}}
 
