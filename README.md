@@ -24,3 +24,7 @@ De app is statisch en kan via GitHub Pages/Netlify/Vercel worden gehost. HTTPS i
 - SheetJS voor Excel import/export.
 - qrcode.js voor QR-weergave.
 Beide worden via CDN geladen; routegegevens zelf gaan niet via deze bibliotheken naar een backend.
+
+
+## Naar telefoon
+Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde link via de systeemeigen deelknop, WhatsApp of kopieer de link. Op de telefoon opent dezelfde Planyx-lite website en worden alle dagen en routes direct lokaal ingeladen. QR en een `.planyx` overdrachtsbestand blijven beschikbaar als reserveopties.

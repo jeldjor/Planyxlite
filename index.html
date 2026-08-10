@@ -75,7 +75,7 @@
 
     <section id="routeActions" class="routeActions hidden">
       <button id="reoptimizeBtn" class="ghost">↻ Resterende route optimaliseren</button>
-      <button id="phoneBtn" class="primary">Open op telefoon</button>
+      <button id="phoneBtn" class="primary">Naar telefoon</button>
       <button id="exportBtn" class="ghost">Excel exporteren</button>
     </section>
 
@@ -101,10 +101,21 @@
 
   <div id="phoneModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="phoneTitle">
     <div class="modalCard">
-      <div class="modalHead"><div><h2 id="phoneTitle">Open op telefoon</h2><p>Scan de QR-code met iPhone of Android.</p></div><button class="iconBtn closePhone">×</button></div>
-      <div id="qrWrap" class="qrWrap"><div id="qrcode"></div></div>
-      <p id="qrInfo" class="muted center"></p>
+      <div class="modalHead"><div><h2 id="phoneTitle">Naar telefoon</h2><p>Stuur de planning als link naar je telefoon. Als je de link opent, worden alle routes direct in Planyx-lite geladen.</p></div><button class="iconBtn closePhone">×</button></div>
+      <div class="phoneTransferInfo">
+        <strong id="transferInfo">Planning gereed</strong>
+        <span>Geen account of Supabase nodig.</span>
+      </div>
+      <div class="phoneMainButtons">
+        <button id="shareLinkBtn" class="primary">Delen</button>
+        <button id="whatsappBtn" class="primary whatsappBtn">Via WhatsApp</button>
+      </div>
       <div class="modalButtons"><button id="copyLinkBtn" class="ghost">Link kopiëren</button><button id="transferFileBtn" class="ghost">Overdrachtsbestand</button></div>
+      <details class="qrDetails">
+        <summary>QR-code als extra optie</summary>
+        <div id="qrWrap" class="qrWrap"><div id="qrcode"></div></div>
+        <p id="qrInfo" class="muted center"></p>
+      </details>
     </div>
   </div>
 
