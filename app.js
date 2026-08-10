@@ -41,15 +41,17 @@ let lastTomTomCall=0;
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 function loadGeoCache(){try{return JSON.parse(localStorage.getItem(GEO_CACHE)||'{}')}catch{return {}}}
 function saveGeoCache(cache){try{localStorage.setItem(GEO_CACHE,JSON.stringify(cache))}catch{}}
-async function tomtomJson(url,{retries=4}={}){
+async function tomtomJson(url,{retries=12}={}){
   for(let attempt=0;;attempt++){
-    const gap=375-(Date.now()-lastTomTomCall);if(gap>0)await sleep(gap);lastTomTomCall=Date.now();
+    // Bewust conservatief: maximaal circa 1 TomTom-call per 2,5 seconde.
+    // De app mag iets langer rekenen, maar hoort niet op API-limieten vast te lopen.
+    const gap=2500-(Date.now()-lastTomTomCall);if(gap>0)await sleep(gap);lastTomTomCall=Date.now();
     const r=await fetch(url);const text=await r.text();let j={};try{j=text?JSON.parse(text):{}}catch{}
     if(r.ok)return j;
     const msg=j.errorText||j?.detailedError?.message||text.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||`TomTom fout (${r.status})`;
-    const limited=r.status===429||/rate limit|too many requests|permitted rate/i.test(msg);
-    if(limited&&attempt<retries){const retryAfter=Number(r.headers.get('Retry-After'));await sleep(Number.isFinite(retryAfter)&&retryAfter>0?retryAfter*1000:1200*Math.pow(2,attempt));continue}
-    if(limited)throw new Error('TomTom rate-limit bereikt. Wacht ongeveer een minuut en probeer opnieuw. Planyx-lite bewaart reeds gevonden adressen, zodat de volgende poging veel minder aanvragen doet.');
+    const limited=r.status===429||r.status===403&&/rate|volume|limit|exceeded/i.test(msg)||/rate limit|too many requests|permitted rate|exceeded.*limit/i.test(msg);
+    if(limited&&attempt<retries){const retryAfter=Number(r.headers.get('Retry-After'));const waits=[5000,8000,12000,18000,25000,35000,45000,60000,60000,60000,60000,60000];await sleep(Number.isFinite(retryAfter)&&retryAfter>0?Math.max(5000,retryAfter*1000):waits[Math.min(attempt,waits.length-1)]);continue}
+    if(limited){const err=new Error('TomTom rate-limit bereikt.');err.code='TOMTOM_RATE_LIMIT';throw err;}
     throw new Error(msg||`TomTom fout (${r.status})`);
   }
 }
@@ -66,7 +68,7 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
   return {ordered,summary:route.summary,legs:route.legs||[]};
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
-function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Route(s) genereren'}
+function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Maak planning'}
 
 async function importExcel(file){
   if(!window.XLSX)throw new Error('Excel-module is nog niet geladen. Controleer de internetverbinding en probeer opnieuw.');
@@ -85,13 +87,29 @@ async function generateAll(){
   if(!state.stops.length)return toast('Importeer eerst een Excel-bestand.');const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
   prefs={...prefs,tomtomKey:key,startAddress:start,endAddress:end,sameEnd:same};savePrefs();state.startAddress=start;state.endAddress=end;state.sameEnd=same;
   try{
-    setBusy('Startadres controleren…');state.startPoint=await geocodeAddress(start,'',key);state.endPoint=same?state.startPoint:await geocodeAddress(end,'',key);
-    const ungeocoded=state.stops.filter(s=>!s.position);let done=0;
-    for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key);saveState()}
-    buildDayShells();const dates=Object.keys(state.days).sort();
-    for(let di=0;di<dates.length;di++){const date=dates[di];setBusy(`Route ${di+1}/${dates.length} optimaliseren…`);await optimizeDay(date,key,true)}
-    saveState();render();toast('Alle routes zijn klaar.');
-  }catch(e){console.error(e);alert(e.message||String(e))}finally{clearBusy()}
+    for(let run=0;run<3;run++){
+      try{
+        setBusy(run?'TomTom limiet hersteld · automatisch doorgaan…':'Startadres controleren…');
+        state.startPoint=state.startPoint||await geocodeAddress(start,'',key);state.endPoint=same?state.startPoint:(state.endPoint||await geocodeAddress(end,'',key));saveState();
+        const ungeocoded=state.stops.filter(s=>!s.position);let done=0;
+        for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key);saveState()}
+        buildDayShells();const dates=Object.keys(state.days).sort();
+        // Geef TomTom na het geocoderen extra ruimte voordat de routeberekeningen beginnen.
+        if(dates.length){setBusy('Alle adressen gevonden · routes voorbereiden…');await sleep(3500)}
+        for(let di=0;di<dates.length;di++){
+          const date=dates[di];
+          setBusy(`Dag ${di+1}/${dates.length} · ${formatDay(date,true)} optimaliseren…`);
+          await optimizeDay(date,key,true);saveState();
+          // Ook tussen dagen bewust pauzeren; betrouwbaarheid gaat boven snelheid.
+          if(di<dates.length-1)await sleep(3000);
+        }
+        saveState();render();toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn volledig geoptimaliseerd.`);return;
+      }catch(e){
+        if(e?.code==='TOMTOM_RATE_LIMIT'&&run<2){setBusy('TomTom limiet · automatisch langer wachten en doorgaan…');saveState();await sleep(run===0?30000:60000);continue}
+        throw e;
+      }
+    }
+  }catch(e){console.error(e);alert(e?.code==='TOMTOM_RATE_LIMIT'?'TomTom blijft de API-limiet blokkeren nadat Planyx-lite meerdere keren automatisch heeft gewacht. Reeds gevonden adressen zijn bewaard; probeer later nogmaals.':(e.message||String(e)))}finally{clearBusy()}
 }
 async function optimizeDay(date,key,withLive){
   const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position);
