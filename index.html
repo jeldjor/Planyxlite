@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#081423">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Planyx-lite">
+  <title>Planyx-lite</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div id="splash" class="splash" aria-hidden="true">
+    <img src="assets/gj-motion.png" alt="GJ Motion">
+    <div class="splash-powered">PLANYX-LITE</div>
+  </div>
+
+  <header class="topbar">
+    <div class="brandMark"><span class="routeP">P</span><div><strong>PLANYX</strong><small>LITE</small></div></div>
+    <div class="topActions">
+      <button id="installBtn" class="ghost hidden">Installeer app</button>
+      <button id="settingsBtn" class="iconBtn" title="Instellingen" aria-label="Instellingen">⚙</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <div>
+        <span class="eyebrow">DAGROUTE</span>
+        <h1 id="pageTitle">Vandaag</h1>
+        <p id="dateLabel" class="muted"></p>
+      </div>
+      <div class="dayNav">
+        <button id="prevDay" class="iconBtn" aria-label="Vorige dag">‹</button>
+        <select id="daySelect" aria-label="Kies dag"></select>
+        <button id="nextDay" class="iconBtn" aria-label="Volgende dag">›</button>
+      </div>
+    </section>
+
+    <section id="setupCard" class="card setupCard">
+      <div class="sectionHead">
+        <div><h2>Planning maken</h2><p>Importeer Excel, kies start/eindadres en maak routes per afleverdatum.</p></div>
+        <button id="toggleSetup" class="ghost mobileOnly">Verbergen</button>
+      </div>
+      <div id="setupBody">
+        <div class="settingsGrid">
+          <label>Startadres<input id="startAddress" autocomplete="street-address" placeholder="Straat 1, 1234 AB Plaats"></label>
+          <label class="endField">Eindadres<input id="endAddress" autocomplete="street-address" placeholder="Straat 1, 1234 AB Plaats"></label>
+          <label class="checkLabel"><input id="sameEnd" type="checkbox" checked> Eindadres is hetzelfde als startadres</label>
+          <label>TomTom API-key<input id="tomtomKey" type="password" autocomplete="off" placeholder="TomTom API-key"></label>
+        </div>
+        <div class="importRow">
+          <label class="fileButton">Excel importeren<input id="excelInput" type="file" accept=".xlsx,.xls,.csv"></label>
+          <button id="generateBtn" class="primary">Route(s) genereren</button>
+          <button id="clearBtn" class="dangerGhost">Nieuwe planning</button>
+          <label class="ghost fileButtonLite">Overdracht openen<input id="transferInput" type="file" accept=".planyx,application/json"></label>
+        </div>
+        <div id="importStatus" class="statusLine">Nog geen bestand geladen.</div>
+        <div class="requiredFields">Benodigde kolommen: d_name, d_phone, d_address1, d_zipcode, d_city, d_country, delivery_date</div>
+      </div>
+    </section>
+
+    <section id="summaryCard" class="summaryGrid hidden">
+      <div class="metric"><b id="stopCount">0</b><span>stops</span></div>
+      <div class="metric"><b id="visitedCount">0</b><span>bezocht</span></div>
+      <div class="metric"><b id="distanceTotal">—</b><span>kilometer</span></div>
+      <div class="metric"><b id="timeTotal">—</b><span>rijtijd</span></div>
+    </section>
+
+    <section id="routeActions" class="routeActions hidden">
+      <button id="reoptimizeBtn" class="ghost">↻ Resterende route optimaliseren</button>
+      <button id="phoneBtn" class="primary">Open op telefoon</button>
+      <button id="exportBtn" class="ghost">Excel exporteren</button>
+    </section>
+
+    <section id="routeList" class="routeList"></section>
+
+    <section id="emptyState" class="emptyState">
+      <div class="emptyIcon">⌖</div>
+      <h2>Nog geen route</h2>
+      <p>Laad op de laptop een Excel-bestand in en genereer de optimale route.</p>
+    </section>
+  </main>
+
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modalCard smallModal">
+      <div class="modalHead"><h2 id="settingsTitle">Instellingen</h2><button class="iconBtn closeModal">×</button></div>
+      <label>Navigatie-app
+        <select id="navApp"><option value="google">Google Maps</option><option value="apple">Apple Kaarten</option><option value="waze">Waze</option></select>
+      </label>
+      <p class="muted tiny">Startadres en TomTom-key worden alleen lokaal op dit apparaat opgeslagen.</p>
+      <button id="saveSettings" class="primary full">Opslaan</button>
+    </div>
+  </div>
+
+  <div id="phoneModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="phoneTitle">
+    <div class="modalCard">
+      <div class="modalHead"><div><h2 id="phoneTitle">Open op telefoon</h2><p>Scan de QR-code met iPhone of Android.</p></div><button class="iconBtn closePhone">×</button></div>
+      <div id="qrWrap" class="qrWrap"><div id="qrcode"></div></div>
+      <p id="qrInfo" class="muted center"></p>
+      <div class="modalButtons"><button id="copyLinkBtn" class="ghost">Link kopiëren</button><button id="transferFileBtn" class="ghost">Overdrachtsbestand</button></div>
+    </div>
+  </div>
+
+  <div id="moveModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="moveTitle">
+    <div class="modalCard smallModal">
+      <div class="modalHead"><h2 id="moveTitle">Naar andere dag</h2><button class="iconBtn closeMove">×</button></div>
+      <label>Nieuwe afleverdatum<input id="moveDate" type="date"></label>
+      <button id="confirmMove" class="primary full">Verplaatsen</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+</body>
+</html>
