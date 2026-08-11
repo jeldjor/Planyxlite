@@ -36,86 +36,79 @@ function optimizeStops(stops,start,end){
   while(improved&&loops++<50){improved=false;let base=routeDistance(order,start,end);for(let i=0;i<order.length-1;i++){for(let j=i+1;j<order.length;j++){const cand=[...order.slice(0,i),...order.slice(i,j+1).reverse(),...order.slice(j+1)];const nd=routeDistance(cand,start,end);if(nd+0.05<base){order.splice(0,order.length,...cand);base=nd;improved=true}}}}
   return order;
 }
-const GEO_CACHE='planyx-lite-geocache-v1';
+const GEO_CACHE='planyx-lite-geocache-v2';
+const MATRIX_CACHE='planyx-lite-matrix-cache-v1';
 let lastTomTomCall=0;
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 function loadGeoCache(){try{return JSON.parse(localStorage.getItem(GEO_CACHE)||'{}')}catch{return {}}}
 function saveGeoCache(cache){try{localStorage.setItem(GEO_CACHE,JSON.stringify(cache))}catch{}}
-async function tomtomJson(url,{retries=12}={}){
+function normalizeText(v){return String(v??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ')}
+function normalizePostal(v){return String(v??'').toUpperCase().replace(/\s+/g,'')}
+async function tomtomJson(url,{retries=12,fetchOptions={}}={}){
   for(let attempt=0;;attempt++){
-    // Bewust conservatief: maximaal circa 1 TomTom-call per 2,5 seconde.
-    // De app mag iets langer rekenen, maar hoort niet op API-limieten vast te lopen.
     const gap=2500-(Date.now()-lastTomTomCall);if(gap>0)await sleep(gap);lastTomTomCall=Date.now();
-    const r=await fetch(url);const text=await r.text();let j={};try{j=text?JSON.parse(text):{}}catch{}
+    const r=await fetch(url,fetchOptions);const text=await r.text();let j={};try{j=text?JSON.parse(text):{}}catch{}
     if(r.ok)return j;
-    const msg=j.errorText||j?.detailedError?.message||text.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||`TomTom fout (${r.status})`;
-    const limited=r.status===429||r.status===403&&/rate|volume|limit|exceeded/i.test(msg)||/rate limit|too many requests|permitted rate|exceeded.*limit/i.test(msg);
+    const msg=j.errorText||j?.detailedError?.message||j?.message||text.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||`TomTom fout (${r.status})`;
+    const limited=r.status===429||r.status===403&&/rate|volume|limit|exceeded|quota/i.test(msg)||/rate limit|too many requests|permitted rate|exceeded.*limit/i.test(msg);
     if(limited&&attempt<retries){const retryAfter=Number(r.headers.get('Retry-After'));const waits=[5000,8000,12000,18000,25000,35000,45000,60000,60000,60000,60000,60000];await sleep(Number.isFinite(retryAfter)&&retryAfter>0?Math.max(5000,retryAfter*1000):waits[Math.min(attempt,waits.length-1)]);continue}
     if(limited){const err=new Error('TomTom rate-limit bereikt.');err.code='TOMTOM_RATE_LIMIT';throw err;}
+    if(r.status===403&&/matrix|entitl|forbidden|inactive|invalid|api key/i.test(msg)){const err=new Error('Deze TomTom API-key heeft geen toegang tot Matrix Routing v2. Controleer in TomTom Developer Portal of Matrix Routing voor deze key beschikbaar is.');err.code='TOMTOM_MATRIX_ACCESS';throw err;}
     throw new Error(msg||`TomTom fout (${r.status})`);
   }
 }
-async function geocodeAddress(query,country,key){
-  const cache=loadGeoCache(),cacheKey=`${countryCode(country)}|${String(query).trim().toLowerCase()}`;if(cache[cacheKey])return cache[cacheKey];
-  const u=new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);u.searchParams.set('key',key);u.searchParams.set('limit','1');const cc=countryCode(country);if(cc)u.searchParams.set('countrySet',cc);const j=await tomtomJson(u);const p=j.results?.[0]?.position;if(!p)throw new Error(`Adres niet gevonden: ${query}`);
-  const found={lat:Number(p.lat),lon:Number(p.lon),freeform:j.results?.[0]?.address?.freeformAddress||query};cache[cacheKey]=found;saveGeoCache(cache);return found
+function scoreGeocodeResult(result,expected={}){
+  const a=result?.address||{};let score=Number(result?.score||0)/1000;
+  const wantedPostal=normalizePostal(expected.postcode),gotPostal=normalizePostal(a.postalCode);
+  if(wantedPostal&&gotPostal){score+=wantedPostal===gotPostal?100:-25}
+  const wantedCity=normalizeText(expected.city);const gotCity=normalizeText([a.municipality,a.municipalitySubdivision,a.localName,a.freeformAddress].filter(Boolean).join(' '));
+  if(wantedCity&&gotCity.includes(wantedCity))score+=30;
+  const wantedStreet=normalizeText(expected.street);const gotStreet=normalizeText([a.streetName,a.freeformAddress].filter(Boolean).join(' '));
+  if(wantedStreet&&gotStreet.includes(wantedStreet.split(/\s+\d/)[0]))score+=10;
+  return score;
 }
-async function routeWholeDay(start,stops,end,key,optimize=true){
-  if(!start||!end)throw new Error('Start- of eindpunt ontbreekt.');
-  if(stops.length>150)throw new Error('Een dag bevat meer dan 150 stops; splits deze dag op.');
-
-  let ordered=[...stops];
-
-  // Stap 1: laat TomTom de tussenstops op basis van het wegennet herschikken.
-  // optimizedWaypoints staat in de Calculate Route-response op ROOT-niveau,
-  // niet binnen routes[0]. In oudere Planyx-lite-versies werd daardoor nooit
-  // daadwerkelijk de door TomTom berekende volgorde toegepast.
-  if(optimize&&stops.length>1){
-    const optimizePoints=[start,...stops.map(s=>s.position),end];
-    const optimizeLocs=optimizePoints.map(p=>`${p.lat},${p.lon}`).join(':');
-    const ou=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${optimizeLocs}/json`);
-    ou.searchParams.set('key',key);
-    ou.searchParams.set('travelMode','car');
-    ou.searchParams.set('traffic','false');
-    // Optimaliseer op de snelste autoroute; dit past bij een koeriersplanning.
-    ou.searchParams.set('routeType','fastest');
-    ou.searchParams.set('routeRepresentation','none');
-    ou.searchParams.set('computeBestOrder','true');
-    const oj=await tomtomJson(ou);
-    const waypoints=oj.optimizedWaypoints;
-    if(!Array.isArray(waypoints)||waypoints.length!==stops.length){
-      throw new Error('TomTom gaf geen geldige geoptimaliseerde stopvolgorde terug.');
-    }
-    // TomTom-documentatie (Calculate Route) geeft expliciet aan:
-    // [{providedIndex:0,optimizedIndex:1},{providedIndex:1,optimizedIndex:2},{providedIndex:2,optimizedIndex:0}]
-    // betekent dat de geoptimaliseerde reeks [1,2,0] is.
-    // Dus optimizedIndex is hier de INDEX UIT DE OORSPRONKELIJKE STOPLIJST
-    // die op positie providedIndex in de nieuwe route moet komen.
-    // De vorige versie draaide deze relatie om en bouwde daardoor de inverse route.
-    const normalized=waypoints
-      .map(w=>({providedIndex:Number(w.providedIndex),optimizedIndex:Number(w.optimizedIndex)}))
-      .sort((a,b)=>a.providedIndex-b.providedIndex);
-    if(normalized.some(w=>!Number.isInteger(w.providedIndex)||!Number.isInteger(w.optimizedIndex)))
-      throw new Error('TomTom gaf ongeldige waypoint-indexen terug.');
-    const next=normalized.map(w=>stops[w.optimizedIndex]);
-    if(next.length!==stops.length||next.some(x=>!x))throw new Error('TomTom gaf een onvolledige geoptimaliseerde stopvolgorde terug.');
-    // Extra veiligheidscontrole: iedere stop moet exact één keer voorkomen.
-    if(new Set(next.map(s=>s.id)).size!==stops.length)throw new Error('TomTom gaf een dubbele of ontbrekende stop terug.');
-    ordered=next;
+async function geocodeAddress(query,country,key,expected={}){
+  const cache=loadGeoCache(),cacheKey=`${countryCode(country)}|${normalizeText(query)}|${normalizePostal(expected.postcode)}|${normalizeText(expected.city)}`;if(cache[cacheKey])return cache[cacheKey];
+  const u=new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);u.searchParams.set('key',key);u.searchParams.set('limit','5');const cc=countryCode(country);if(cc)u.searchParams.set('countrySet',cc);const j=await tomtomJson(u);const results=Array.isArray(j.results)?j.results:[];if(!results.length)throw new Error(`Adres niet gevonden: ${query}`);
+  const best=[...results].sort((a,b)=>scoreGeocodeResult(b,expected)-scoreGeocodeResult(a,expected))[0],p=best?.position;if(!p)throw new Error(`Adres niet gevonden: ${query}`);
+  const found={lat:Number(p.lat),lon:Number(p.lon),freeform:best?.address?.freeformAddress||query,postalCode:best?.address?.postalCode||'',city:best?.address?.municipality||best?.address?.localName||''};cache[cacheKey]=found;saveGeoCache(cache);return found
+}
+function matrixCacheKey(points){return points.map(p=>`${Number(p.lat).toFixed(5)},${Number(p.lon).toFixed(5)}`).join('|')}
+function loadMatrixCache(){try{return JSON.parse(localStorage.getItem(MATRIX_CACHE)||'{}')}catch{return {}}}
+function saveMatrixCache(cache){try{const entries=Object.entries(cache).sort((a,b)=>(b[1]?.ts||0)-(a[1]?.ts||0)).slice(0,8);localStorage.setItem(MATRIX_CACHE,JSON.stringify(Object.fromEntries(entries)))}catch{}}
+async function buildTravelMatrix(points,key,onProgress=()=>{}){
+  const n=points.length;if(n<2)throw new Error('Te weinig punten voor routeoptimalisatie.');
+  if(n>50)throw new Error('Voor de nauwkeurige routeoptimalisatie ondersteunt Planyx-lite maximaal 48 afleverstops per dag. Splits deze dag op.');
+  const cache=loadMatrixCache(),ck=matrixCacheKey(points);if(cache[ck]?.times?.length===n){onProgress('Reistijdmatrix uit cache laden…');return cache[ck]}
+  const times=Array.from({length:n},()=>Array(n).fill(Infinity)),distances=Array.from({length:n},()=>Array(n).fill(Infinity));for(let i=0;i<n;i++){times[i][i]=0;distances[i][i]=0}
+  const maxCells=200,chunkSize=Math.max(1,Math.floor(maxCells/n));let requestNo=0,totalRequests=Math.ceil(n/chunkSize);
+  for(let from=0;from<n;from+=chunkSize){const originIdx=[];for(let i=from;i<Math.min(n,from+chunkSize);i++)originIdx.push(i);requestNo++;onProgress(`Reistijden ophalen ${requestNo}/${totalRequests}…`);
+    const body={origins:originIdx.map(i=>({point:{latitude:points[i].lat,longitude:points[i].lon}})),destinations:points.map(p=>({point:{latitude:p.lat,longitude:p.lon}})),options:{departAt:'any',traffic:'historical',routeType:'fastest',travelMode:'car'}};
+    const u=new URL('https://api.tomtom.com/routing/matrix/2');u.searchParams.set('key',key);
+    const j=await tomtomJson(u,{fetchOptions:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}});
+    for(const cell of (j.data||[])){const gi=originIdx[Number(cell.originIndex)],dj=Number(cell.destinationIndex);if(!Number.isInteger(gi)||!Number.isInteger(dj)||gi<0||dj<0||dj>=n)continue;const sum=cell.routeSummary;if(sum){times[gi][dj]=Number(sum.travelTimeInSeconds);distances[gi][dj]=Number(sum.lengthInMeters)}}
   }
-
-  // Stap 2: bereken over die definitieve volgorde de echte snelste autoroute,
-  // zodat afstand, rijtijd en trajectgegevens bij dezelfde volgorde horen.
-  const finalPoints=[start,...ordered.map(s=>s.position),end];
-  const finalLocs=finalPoints.map(p=>`${p.lat},${p.lon}`).join(':');
-  const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${finalLocs}/json`);
-  u.searchParams.set('key',key);
-  u.searchParams.set('travelMode','car');
-  u.searchParams.set('traffic','true');
-  u.searchParams.set('routeType','fastest');
-  u.searchParams.set('routeRepresentation','summaryOnly');
-  const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('Geen route gevonden.');
-  return {ordered,summary:route.summary,legs:route.legs||[]};
+  const missing=[];for(let i=0;i<n;i++)for(let j=0;j<n;j++)if(i!==j&&!Number.isFinite(times[i][j]))missing.push([i,j]);
+  if(missing.length){throw new Error(`TomTom kon ${missing.length} verbinding(en) in de reistijdmatrix niet berekenen. Controleer de adressen en probeer opnieuw.`)}
+  const result={times,distances,ts:Date.now()};cache[ck]=result;saveMatrixCache(cache);return result
+}
+function pathCost(order,times){if(!order.length)return times[0][times.length-1];let total=times[0][order[0]+1];for(let i=1;i<order.length;i++)total+=times[order[i-1]+1][order[i]+1];total+=times[order[order.length-1]+1][times.length-1];return total}
+function greedyOrder(stopCount,times,forcedFirst=null){const left=new Set(Array.from({length:stopCount},(_,i)=>i)),order=[];let node=0;if(forcedFirst!=null&&left.has(forcedFirst)){order.push(forcedFirst);left.delete(forcedFirst);node=forcedFirst+1}while(left.size){let best=null,bestCost=Infinity;for(const s of left){const direct=times[node][s+1],toEnd=times[s+1][times.length-1];const score=direct+(left.size===1?toEnd:toEnd*.03);if(score<bestCost){bestCost=score;best=s}}if(best==null)break;order.push(best);left.delete(best);node=best+1}return order}
+function improveMatrixOrder(seed,times){let best=[...seed],bestCost=pathCost(best,times);const n=best.length;for(let pass=0;pass<28;pass++){let move=null,moveCost=bestCost;
+    for(let i=0;i<n;i++)for(let j=0;j<n;j++){if(i===j)continue;const cand=[...best],x=cand.splice(i,1)[0];cand.splice(j,0,x);const c=pathCost(cand,times);if(c+0.5<moveCost){move=cand;moveCost=c}}
+    for(let i=0;i<n-1;i++)for(let j=i+1;j<n;j++){const cand=[...best];[cand[i],cand[j]]=[cand[j],cand[i]];const c=pathCost(cand,times);if(c+0.5<moveCost){move=cand;moveCost=c}}
+    for(let i=0;i<n-1;i++)for(let j=i+1;j<n;j++){const cand=[...best.slice(0,i),...best.slice(i,j+1).reverse(),...best.slice(j+1)];const c=pathCost(cand,times);if(c+0.5<moveCost){move=cand;moveCost=c}}
+    if(!move)break;best=move;bestCost=moveCost
+  }return {order:best,cost:bestCost}}
+function findBestMatrixOrder(stopCount,times){const original=Array.from({length:stopCount},(_,i)=>i),seeds=[original,greedyOrder(stopCount,times)];for(let first=0;first<stopCount;first++)seeds.push(greedyOrder(stopCount,times,first));const unique=new Map;for(const seed of seeds){if(seed.length===stopCount)unique.set(seed.join(','),seed)}const ranked=[...unique.values()].map(order=>({order,cost:pathCost(order,times)})).sort((a,b)=>a.cost-b.cost).slice(0,8);let best={order:original,cost:pathCost(original,times)};for(const seed of ranked){const improved=improveMatrixOrder(seed.order,times);if(improved.cost<best.cost)best=improved}return {original,originalCost:pathCost(original,times),...best}}
+async function calculateFixedRoute(start,ordered,end,key,onProgress=()=>{}){
+  onProgress('Definitieve route bij TomTom berekenen…');const points=[start,...ordered.map(s=>s.position),end],locs=points.map(p=>`${p.lat},${p.lon}`).join(':');const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','true');u.searchParams.set('routeType','fastest');u.searchParams.set('routeRepresentation','summaryOnly');const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('TomTom kon de definitieve route niet berekenen.');return {summary:route.summary,legs:route.legs||[]}}
+async function optimizeRouteByTravelTime(start,stops,end,key,onProgress=()=>{}){
+  if(!start||!end)throw new Error('Start- of eindpunt ontbreekt.');if(!stops.length)return {ordered:[],summary:{lengthInMeters:0,travelTimeInSeconds:0},legs:[],changed:false,savedSeconds:0,beforeSummary:null};
+  const points=[start,...stops.map(s=>s.position),end];onProgress('Echte reistijden tussen alle stops bepalen…');const matrix=await buildTravelMatrix(points,key,onProgress);onProgress('Beste stopvolgorde zoeken…');const best=findBestMatrixOrder(stops.length,matrix.times);const candidate=best.order.map(i=>stops[i]);const same=best.order.every((v,i)=>v===i);
+  onProgress('Huidige route controleren…');const before=await calculateFixedRoute(start,stops,end,key,onProgress);if(same)return {ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost};
+  onProgress('Geoptimaliseerde route controleren…');const after=await calculateFixedRoute(start,candidate,end,key,onProgress);const beforeSec=Number(before.summary.travelTimeInSeconds||0),afterSec=Number(after.summary.travelTimeInSeconds||0),beforeM=Number(before.summary.lengthInMeters||0),afterM=Number(after.summary.lengthInMeters||0);const faster=afterSec<beforeSec||afterSec===beforeSec&&afterM<beforeM;
+  return faster?{ordered:candidate,summary:after.summary,legs:after.legs,changed:true,savedSeconds:Math.max(0,beforeSec-afterSec),beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost}:{ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost}
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
 function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Genereer planning'}
@@ -166,7 +159,7 @@ async function generateAll(){
         state.startPoint=state.startPoint||await geocodeAddress(start,'',key);
         state.endPoint=same?state.startPoint:(state.endPoint||await geocodeAddress(end,'',key));saveState();
         const ungeocoded=state.stops.filter(s=>!s.position);let done=0;
-        for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key);saveState()}
+        for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key,{postcode:s.d_zipcode,city:s.d_city,street:s.d_address1});saveState()}
         buildDayShells();const dates=Object.keys(state.days).sort();
         // Genereer alleen de dagplanning. Bewaar per dag de volgorde uit het Excel-bestand.
         for(const date of dates){
@@ -184,30 +177,26 @@ async function generateAll(){
   }catch(e){console.error(e);alert(e?.code==='TOMTOM_RATE_LIMIT'?'TomTom blijft de API-limiet blokkeren nadat Planyx-lite meerdere keren automatisch heeft gewacht. Reeds gevonden adressen zijn bewaard; probeer later nogmaals.':(e.message||String(e)))}finally{clearBusy()}
 }
 
-async function optimizeDay(date,key,withLive){
-  const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position);
-  let combined=[...visited];let totalKm=0,totalMin=null,liveOk=withLive&&!!key;
-  if(liveOk&&remaining.length){
-    setBusy(`${formatDay(date,true)} · optimale route berekenen…`);const routeStart=visited.length?visited[visited.length-1].position:state.startPoint;const result=await routeWholeDay(routeStart,remaining,state.endPoint,key,true);combined=[...visited,...result.ordered];
-    const routeKm=Number(result.summary.lengthInMeters||0)/1000,routeMin=Number(result.summary.travelTimeInSeconds||0)/60;
-    if(visited.length){let p=state.startPoint;for(const s of visited){const km=hav(p,s.position);s.legKm=km;s.legMin=null;totalKm+=km;p=s.position}totalKm+=routeKm}else{totalKm=routeKm;totalMin=routeMin}
-    const legs=result.legs||[];result.ordered.forEach((s,i)=>{const leg=legs[i]?.summary;s.legKm=leg?Number(leg.lengthInMeters||0)/1000:null;s.legMin=leg?Number(leg.travelTimeInSeconds||0)/60:null});
-  }else{
-    const localStart=visited.length?visited[visited.length-1].position:state.startPoint;const optimized=optimizeStops(remaining,localStart,state.endPoint);combined=[...visited,...optimized];let p=state.startPoint;for(const s of combined){const km=hav(p,s.position);s.legKm=km;s.legMin=null;totalKm+=km;p=s.position}if(combined.length)totalKm+=hav(p,state.endPoint);liveOk=false
-  }
-  combined.forEach((s,i)=>s.order=i+1);state.days[date]={date,generated:true,summary:{km:totalKm,min:totalMin,live:liveOk,updatedAt:new Date().toISOString()}};
+async function optimizeDay(date,key,onProgress=()=>{}){
+  const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position).sort((a,b)=>(a.order||9999)-(b.order||9999));
+  if(!key)throw new Error('Vul op dit apparaat eerst de TomTom API-key in via Import / Database.');
+  if(!remaining.length){return {changed:false,savedSeconds:0,beforeSummary:null,afterSummary:null}}
+  const routeStart=visited.length?visited[visited.length-1].position:state.startPoint;if(!routeStart||!state.endPoint)throw new Error('Start- of eindpunt ontbreekt. Genereer de planning opnieuw.');
+  const result=await optimizeRouteByTravelTime(routeStart,remaining,state.endPoint,key,onProgress),combined=[...visited,...result.ordered];combined.forEach((s,i)=>s.order=i+1);
+  result.ordered.forEach((s,i)=>{const leg=result.legs?.[i]?.summary;s.legKm=leg?Number(leg.lengthInMeters||0)/1000:null;s.legMin=leg?Number(leg.travelTimeInSeconds||0)/60:null});
+  const totalKm=Number(result.summary?.lengthInMeters||0)/1000,totalMin=Number(result.summary?.travelTimeInSeconds||0)/60,beforeKm=Number(result.beforeSummary?.lengthInMeters||0)/1000,beforeMin=Number(result.beforeSummary?.travelTimeInSeconds||0)/60;
+  state.days[date]={date,generated:true,summary:{km:totalKm,min:totalMin,live:true,optimized:true,changed:result.changed,beforeKm:Number.isFinite(beforeKm)?beforeKm:null,beforeMin:Number.isFinite(beforeMin)?beforeMin:null,savedMin:Number(result.savedSeconds||0)/60,algorithm:'tomtom-matrix-travel-time',updatedAt:new Date().toISOString()}};
+  return {changed:result.changed,savedSeconds:result.savedSeconds,beforeSummary:result.beforeSummary,afterSummary:result.summary}
 }
 async function reoptimizeCurrent(){
   const d=state.selectedDay;if(!d)return;
-  const key=prefs.tomtomKey||$('tomtomKey').value.trim();
-  const btn=$('reoptimizeBtn'),oldText=btn.textContent;btn.disabled=true;btn.textContent='Optimaliseren…';
+  const key=prefs.tomtomKey||$('tomtomKey').value.trim();if(!key)return alert('Vul eerst de TomTom API-key in via Import / Database.');
+  const btn=$('reoptimizeBtn'),oldText=btn.textContent;btn.disabled=true;const progress=msg=>{btn.textContent=msg};
   try{
-    const before=dayStops(d).map(s=>s.id).join('|');
-    await optimizeDay(d,key,!!key);
-    const after=dayStops(d).map(s=>s.id).join('|');
-    if(state.days[d]?.summary){state.days[d].summary.optimized=true;state.days[d].summary.orderBefore=before;state.days[d].summary.orderAfter=after;}
-    saveState();render();
-    toast(before===after?`TomTom heeft dezelfde volgorde als beste route behouden.`:`Route ${formatDay(d,true)} is geoptimaliseerd en herschikt.`);
+    const beforeOrder=dayStops(d).map(s=>s.id).join('|');progress('Reistijden ophalen…');const outcome=await optimizeDay(d,key,progress);const afterOrder=dayStops(d).map(s=>s.id).join('|');saveState();render();
+    const saved=Math.round(Number(outcome.savedSeconds||0)/60);
+    if(beforeOrder!==afterOrder&&outcome.changed)toast(saved>0?`Route herschikt · ongeveer ${saved} min sneller.`:`Route is herschikt en geoptimaliseerd.`);
+    else toast('Geen snellere volgorde gevonden; huidige route is behouden.');
   }catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}
 }
 
@@ -234,7 +223,7 @@ function stopHtml(s,i){const km=s.legKm!=null?`${s.legKm.toFixed(1)} km vanaf vo
 function selectDay(delta){const ds=currentWeekDates();if(!ds.length)return;let i=Math.max(0,ds.indexOf(state.selectedDay));i=Math.max(0,Math.min(ds.length-1,i+delta));state.selectedDay=ds[i];saveState();render()}
 function toggleVisit(id){const s=state.stops.find(x=>x.id===id);if(!s)return;s.visited=!s.visited;saveState();render()}
 function manualMove(id,delta){const d=state.selectedDay,arr=dayStops(d),i=arr.findIndex(s=>s.id===id),j=i+delta;if(i<0||j<0||j>=arr.length)return;[arr[i].order,arr[j].order]=[arr[j].order||j+1,arr[i].order||i+1];state.days[d].summary={...state.days[d].summary,live:false,min:null};saveState();render()}
-function moveToDate(id,date){const s=state.stops.find(x=>x.id===id);if(!s||!date)return;const old=s.delivery_date;s.delivery_date=date;s.visited=false;s.order=0;buildDayShells();if(state.days[old])state.days[old].summary={...state.days[old].summary,live:false,min:null};if(state.days[date])state.days[date].summary={...state.days[date].summary,live:false,min:null};try{optimizeDay(old,'',false);optimizeDay(date,'',false)}catch{}state.selectedDay=old;saveState();render();toast(`Verplaatst naar ${formatDay(date,true)}.`)}
+function moveToDate(id,date){const s=state.stops.find(x=>x.id===id);if(!s||!date)return;const old=s.delivery_date;s.delivery_date=date;s.visited=false;s.order=0;buildDayShells();for(const d of [old,date]){const arr=state.stops.filter(x=>x.delivery_date===d).sort((a,b)=>(a.order||9999)-(b.order||9999));arr.forEach((x,i)=>x.order=i+1);if(state.days[d])state.days[d].summary={...state.days[d].summary,km:null,min:null,live:false,optimized:false,changed:false}}state.selectedDay=old;saveState();render();toast(`Verplaatst naar ${formatDay(date,true)}. Optimaliseer de route opnieuw.`)}
 
 function exportExcel(){if(!window.XLSX)return toast('Excel-module niet beschikbaar.');if(!state.stops.length)return;const rows=[...state.stops].sort((a,b)=>a.delivery_date.localeCompare(b.delivery_date)||(a.order||0)-(b.order||0)).map(s=>({d_name:s.d_name,d_phone:s.d_phone,d_address1:s.d_address1,d_zipcode:s.d_zipcode,d_city:s.d_city,d_country:s.d_country,delivery_date:s.delivery_date,bezocht:s.visited?'Ja':'Nee'}));const ws=XLSX.utils.json_to_sheet(rows,{header:[...REQUIRED,'bezocht']});ws['!cols']=[{wch:28},{wch:16},{wch:30},{wch:12},{wch:22},{wch:14},{wch:16},{wch:10}];const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Routes');XLSX.writeFile(wb,`Planyx-lite resultaat ${todayIso()}.xlsx`)}
 function compactPayload(){return {v:1,s:state.startAddress,e:state.endAddress,se:state.sameEnd,sp:state.startPoint,ep:state.endPoint,st:state.stops.map(x=>({i:x.id,n:x.d_name,p:x.d_phone,a:x.d_address1,z:x.d_zipcode,c:x.d_city,o:x.d_country,d:x.delivery_date,od:x.original_delivery_date,v:x.visited?1:0,pos:x.position,r:x.order,k:x.legKm,m:x.legMin})),dy:state.days,sd:state.selectedDay}}

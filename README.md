@@ -49,3 +49,14 @@ Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde l
 ## v1.0.14
 - Correcte TomTom optimizedWaypoints-mapping: sorteren op optimizedIndex en oorspronkelijke stop kiezen via providedIndex.
 - Optimalisatie gebruikt routeType=fastest.
+
+
+## v1.0.15
+- `Optimaliseer route` gebruikt niet meer `computeBestOrder` als routeplanner.
+- De app vraagt via TomTom Matrix Routing v2 de echte rijtijd tussen alle relevante punten op.
+- De stopvolgorde wordt lokaal geoptimaliseerd op totale rijtijd met meerdere startoplossingen, nearest-neighbour, verplaatsen, wisselen en 2-opt.
+- Start- en eindadres blijven vast; iedere afleverstop komt exact één keer voor.
+- De oorspronkelijke route en de kandidaatroute worden daarna allebei door TomTom als `fastest` autoroute gecontroleerd met verkeer.
+- De nieuwe volgorde wordt alleen toegepast als die volgens TomTom daadwerkelijk sneller is (bij gelijke tijd: korter in afstand).
+- Geocodecache is vernieuwd en postcode/stad wegen mee bij het kiezen van het beste geocoderesultaat.
+- PWA gebruikt voor eigen bestanden network-first en versie-URL's, zodat een GitHub-update niet stilletjes oude JavaScript blijft draaien.
