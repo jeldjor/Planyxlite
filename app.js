@@ -4,7 +4,7 @@ const $=id=>document.getElementById(id);
 const STORE='planyx-lite-state-v1';
 const PREF='planyx-lite-prefs-v1';
 const REQUIRED=['d_name','d_phone','d_address1','d_zipcode','d_city','d_country','delivery_date'];
-let deferredInstall=null, movingStopId=null, transferLink='';
+let deferredInstall=null, movingStopId=null, transferLink='', currentView='';
 let state=loadState();
 let prefs=loadPrefs();
 
@@ -83,6 +83,24 @@ async function importExcel(file){
 function buildDayShells(){const old=state.days||{};const dates=[...new Set(state.stops.map(s=>s.delivery_date).filter(Boolean))].sort();const days={};for(const d of dates){days[d]=old[d]||{date:d,summary:null,generated:false};}state.days=days;if(!state.selectedDay||!days[state.selectedDay])state.selectedDay=dates.includes(todayIso())?todayIso():dates[0]||''}
 function todayIso(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 
+function weekBounds(baseIso=todayIso()){
+  const d=new Date(baseIso+'T12:00:00');const day=(d.getDay()+6)%7;d.setDate(d.getDate()-day);
+  const start=new Date(d),end=new Date(d);end.setDate(end.getDate()+6);
+  const toIso=x=>`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+  return {start:toIso(start),end:toIso(end)};
+}
+function currentWeekDates(){const {start,end}=weekBounds();return Object.keys(state.days||{}).filter(d=>d>=start&&d<=end).sort()}
+function isPhoneLayout(){return window.matchMedia('(max-width: 760px)').matches}
+function setView(view,{remember=true}={}){
+  currentView=view==='database'?'database':'route';
+  $('databaseView').classList.toggle('hidden',currentView!=='database');
+  $('routeView').classList.toggle('hidden',currentView!=='route');
+  $('databaseTab').classList.toggle('active',currentView==='database');
+  $('routeTab').classList.toggle('active',currentView==='route');
+  if(remember)sessionStorage.setItem('planyx-lite-view',currentView);
+}
+function defaultView(){return isPhoneLayout()?'route':'database'}
+
 async function generateAll(){
   if(!state.stops.length)return toast('Importeer eerst een Excel-bestand.');
   state.planningReady=false;saveState();render();const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
@@ -106,7 +124,7 @@ async function generateAll(){
         }
         const incomplete=dates.filter(d=>!state.days[d]?.generated||!state.days[d]?.summary);
         if(incomplete.length)throw new Error(`Niet alle dagen zijn afgerond (${incomplete.length} resterend).`);
-        state.planningReady=true;saveState();render();toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn gegenereerd en geoptimaliseerd.`);return;
+        state.planningReady=true;saveState();render();setView('route');toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn gegenereerd en geoptimaliseerd.`);return;
       }catch(e){
         if(e?.code==='TOMTOM_RATE_LIMIT'&&run<2){setBusy('TomTom limiet · automatisch langer wachten en doorgaan…');saveState();await sleep(run===0?30000:60000);continue}
         throw e;
@@ -127,14 +145,24 @@ async function optimizeDay(date,key,withLive){
   }
   combined.forEach((s,i)=>s.order=i+1);state.days[date]={date,generated:true,summary:{km:totalKm,min:totalMin,live:liveOk,updatedAt:new Date().toISOString()}};
 }
-function reoptimizeCurrent(){const d=state.selectedDay;if(!d)return;try{optimizeDay(d,'',false);saveState();render();toast('Resterende stops opnieuw geordend.')}catch(e){toast(e.message)}}
+async function reoptimizeCurrent(){
+  const d=state.selectedDay;if(!d)return;
+  const key=prefs.tomtomKey||$('tomtomKey').value.trim();
+  const btn=$('reoptimizeBtn'),oldText=btn.textContent;btn.disabled=true;btn.textContent='Optimaliseren…';
+  try{await optimizeDay(d,key,!!key);saveState();render();toast('Route geoptimaliseerd.')}catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}
+}
 
 function dayStops(date){return state.stops.filter(s=>s.delivery_date===date).sort((a,b)=>(a.order||9999)-(b.order||9999))}
 function navUrl(s){const q=encodeURIComponent(addressOf(s));if(prefs.navApp==='apple')return `https://maps.apple.com/?daddr=${q}&dirflg=d`;if(prefs.navApp==='waze')return `https://www.waze.com/ul?q=${q}&navigate=yes`;return `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving`}
+function fullRouteUrl(){const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return '';const origin=state.startAddress||'';const destination=state.endAddress||addressOf(stops[stops.length-1]);if(prefs.navApp==='google'){const mids=stops.slice(0,-1).slice(0,9).map(addressOf);const u=new URL('https://www.google.com/maps/dir/');u.searchParams.set('api','1');if(origin)u.searchParams.set('origin',origin);u.searchParams.set('destination',destination);u.searchParams.set('travelmode','driving');if(mids.length)u.searchParams.set('waypoints',mids.join('|'));return u.toString()}return ''}
+function openWholeRoute(){const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return toast('Geen resterende stops.');if(prefs.navApp!=='google'){const name=prefs.navApp==='waze'?'Waze':'Apple Kaarten';alert(`${name} ondersteunt vanuit een webapp geen complete multi-stop route. Planyx-lite toont daarom de volledige volgorde zelf; gebruik Navigeren per stop. Kies Google Maps als je de dagroute met tussenstops in één kaart wilt openen.`);return}const u=fullRouteUrl();if(!u)return;window.open(u,'_blank','noopener')}
 function minutesText(min){if(min==null||!isFinite(min))return '—';const h=Math.floor(min/60),m=Math.round(min%60);return h?`${h}u ${m}m`:`${m} min`}
 function render(){
-  buildDayShells();const ready=state.planningReady===true;const dates=ready?Object.keys(state.days).sort():[];$('daySelect').innerHTML=dates.length?dates.map(d=>`<option value="${d}" ${d===state.selectedDay?'selected':''}>${esc(formatDay(d,true))}</option>`).join(''):'<option>Geen planning</option>';
-  const d=ready?state.selectedDay:'';$('pageTitle').textContent=d===todayIso()?'Vandaag':(d?formatDay(d,true):'Vandaag');$('dateLabel').textContent=d?formatDay(d):formatDay(todayIso());
+  buildDayShells();const ready=state.planningReady===true;const dates=ready?currentWeekDates():[];
+  if(ready&&dates.length&&!dates.includes(state.selectedDay))state.selectedDay=dates.includes(todayIso())?todayIso():dates[0];
+  $('daySelect').innerHTML=dates.length?dates.map(d=>`<option value="${d}" ${d===state.selectedDay?'selected':''}>${esc(formatDay(d,true))}</option>`).join(''):'<option>Geen route deze week</option>';
+  $('prevDay').disabled=dates.length<2||dates.indexOf(state.selectedDay)<=0;$('nextDay').disabled=dates.length<2||dates.indexOf(state.selectedDay)>=dates.length-1;
+  const d=ready&&dates.includes(state.selectedDay)?state.selectedDay:'';$('pageTitle').textContent=d===todayIso()?'Vandaag':(d?formatDay(d,true):'Vandaag');$('dateLabel').textContent=d?formatDay(d):formatDay(todayIso());
   const stops=ready&&d?dayStops(d):[],has=ready&&stops.length>0;$('emptyState').classList.toggle('hidden',has);$('summaryCard').classList.toggle('hidden',!has);$('routeActions').classList.toggle('hidden',!has);$('routeList').innerHTML='';
   if(has){const visited=stops.filter(s=>s.visited).length,sum=state.days[d]?.summary;$('stopCount').textContent=stops.length;$('visitedCount').textContent=visited;$('distanceTotal').textContent=sum?.km!=null?sum.km.toFixed(0):'—';$('timeTotal').textContent=minutesText(sum?.min);
     $('routeList').innerHTML=stops.map((s,i)=>stopHtml(s,i)).join('');
@@ -144,14 +172,14 @@ function render(){
   else if(state.stops.length&&ready)$('importStatus').textContent=`Planning gereed: ${state.stops.length} afleveringen verdeeld over ${Object.keys(state.days).length} dag(en).`;
 }
 function stopHtml(s,i){const km=s.legKm!=null?`${s.legKm.toFixed(1)} km vanaf vorige`:'';const phone=s.d_phone?`<a href="tel:${esc(s.d_phone)}">☎ Bellen</a>`:'';return `<article class="stopCard ${s.visited?'visited':''}" data-id="${esc(s.id)}"><div class="stopNo">${s.visited?'✓':(s.order||i+1)}</div><div class="stopInfo"><div class="stopName">${esc(s.d_name||'Naam onbekend')}</div><div class="stopAddress">${esc(s.d_address1)} · ${esc(s.d_zipcode)} ${esc(s.d_city)}</div><div class="stopMeta">${s.d_phone?`<span>☎ ${esc(s.d_phone)}</span>`:''}<span>${esc(s.d_country)}</span>${km?`<span>${km}</span>`:''}</div></div><div class="stopButtons"><a class="navigate" href="${navUrl(s)}" target="_blank" rel="noopener">Navigeren</a><button class="visitBtn ${s.visited?'active':''}" data-action="visit">${s.visited?'Bezocht ✓':'Bezocht'}</button><button class="moreBtn" data-action="more">•••</button></div><div class="stopMove"><button data-action="move">Naar andere dag</button><button data-action="up">↑ Omhoog</button><button data-action="down">↓ Omlaag</button></div></article>`}
-function selectDay(delta){const ds=Object.keys(state.days).sort();if(!ds.length)return;let i=Math.max(0,ds.indexOf(state.selectedDay));i=Math.max(0,Math.min(ds.length-1,i+delta));state.selectedDay=ds[i];saveState();render()}
+function selectDay(delta){const ds=currentWeekDates();if(!ds.length)return;let i=Math.max(0,ds.indexOf(state.selectedDay));i=Math.max(0,Math.min(ds.length-1,i+delta));state.selectedDay=ds[i];saveState();render()}
 function toggleVisit(id){const s=state.stops.find(x=>x.id===id);if(!s)return;s.visited=!s.visited;saveState();render()}
 function manualMove(id,delta){const d=state.selectedDay,arr=dayStops(d),i=arr.findIndex(s=>s.id===id),j=i+delta;if(i<0||j<0||j>=arr.length)return;[arr[i].order,arr[j].order]=[arr[j].order||j+1,arr[i].order||i+1];state.days[d].summary={...state.days[d].summary,live:false,min:null};saveState();render()}
 function moveToDate(id,date){const s=state.stops.find(x=>x.id===id);if(!s||!date)return;const old=s.delivery_date;s.delivery_date=date;s.visited=false;s.order=0;buildDayShells();if(state.days[old])state.days[old].summary={...state.days[old].summary,live:false,min:null};if(state.days[date])state.days[date].summary={...state.days[date].summary,live:false,min:null};try{optimizeDay(old,'',false);optimizeDay(date,'',false)}catch{}state.selectedDay=old;saveState();render();toast(`Verplaatst naar ${formatDay(date,true)}.`)}
 
 function exportExcel(){if(!window.XLSX)return toast('Excel-module niet beschikbaar.');if(!state.stops.length)return;const rows=[...state.stops].sort((a,b)=>a.delivery_date.localeCompare(b.delivery_date)||(a.order||0)-(b.order||0)).map(s=>({d_name:s.d_name,d_phone:s.d_phone,d_address1:s.d_address1,d_zipcode:s.d_zipcode,d_city:s.d_city,d_country:s.d_country,delivery_date:s.delivery_date,bezocht:s.visited?'Ja':'Nee'}));const ws=XLSX.utils.json_to_sheet(rows,{header:[...REQUIRED,'bezocht']});ws['!cols']=[{wch:28},{wch:16},{wch:30},{wch:12},{wch:22},{wch:14},{wch:16},{wch:10}];const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Routes');XLSX.writeFile(wb,`Planyx-lite resultaat ${todayIso()}.xlsx`)}
 function compactPayload(){return {v:1,s:state.startAddress,e:state.endAddress,se:state.sameEnd,sp:state.startPoint,ep:state.endPoint,st:state.stops.map(x=>({i:x.id,n:x.d_name,p:x.d_phone,a:x.d_address1,z:x.d_zipcode,c:x.d_city,o:x.d_country,d:x.delivery_date,od:x.original_delivery_date,v:x.visited?1:0,pos:x.position,r:x.order,k:x.legKm,m:x.legMin})),dy:state.days,sd:state.selectedDay}}
-function payloadToState(p){if(!p||p.v!==1||!Array.isArray(p.st))throw new Error('Ongeldige Planyx-lite overdracht.');state={...defaultState(),startAddress:p.s||'',endAddress:p.e||'',sameEnd:p.se!==false,startPoint:p.sp||null,endPoint:p.ep||null,selectedDay:p.sd||'',days:p.dy||{},planningReady:true,stops:p.st.map(x=>({id:x.i,d_name:x.n||'',d_phone:x.p||'',d_address1:x.a||'',d_zipcode:x.z||'',d_city:x.c||'',d_country:x.o||'',delivery_date:x.d,original_delivery_date:x.od||x.d,visited:!!x.v,position:x.pos||null,order:x.r||0,legKm:x.k??null,legMin:x.m??null}))};buildDayShells();saveState();render()}
+function payloadToState(p){if(!p||p.v!==1||!Array.isArray(p.st))throw new Error('Ongeldige Planyx-lite overdracht.');state={...defaultState(),startAddress:p.s||'',endAddress:p.e||'',sameEnd:p.se!==false,startPoint:p.sp||null,endPoint:p.ep||null,selectedDay:p.sd||'',days:p.dy||{},planningReady:true,stops:p.st.map(x=>({id:x.i,d_name:x.n||'',d_phone:x.p||'',d_address1:x.a||'',d_zipcode:x.z||'',d_city:x.c||'',d_country:x.o||'',delivery_date:x.d,original_delivery_date:x.od||x.d,visited:!!x.v,position:x.pos||null,order:x.r||0,legKm:x.k??null,legMin:x.m??null}))};buildDayShells();saveState();render();setView('route')}
 function bytesToB64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function b64ToBytes(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s),out=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i);return out}
 async function compressText(text){if('CompressionStream'in window){const cs=new CompressionStream('gzip');const ab=await new Response(new Blob([text]).stream().pipeThrough(cs)).arrayBuffer();return 'g'+bytesToB64(new Uint8Array(ab))}return 'j'+bytesToB64(new TextEncoder().encode(text))}
@@ -164,13 +192,14 @@ function downloadTransfer(){const blob=new Blob([JSON.stringify(compactPayload()
 async function receiveHash(){const m=location.hash.match(/^#plan=(.+)$/);if(!m)return;try{const text=await decompressText(m[1]);payloadToState(JSON.parse(text));history.replaceState(null,'',location.pathname+location.search);toast('Planning op telefoon geladen.')}catch(e){console.error(e);alert('Planning kon niet worden geladen: '+e.message)}}
 
 function bind(){
+  $('databaseTab').onclick=()=>setView('database');$('routeTab').onclick=()=>setView('route');
   $('excelInput').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{await importExcel(f)}catch(err){alert(err.message)}e.target.value=''});
   $('transferInput').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{payloadToState(JSON.parse(await f.text()));toast('Overdracht geladen.')}catch(err){alert('Overdracht kon niet worden geopend: '+err.message)}e.target.value=''});
   $('sameEnd').addEventListener('change',()=>{$('endAddress').disabled=$('sameEnd').checked;if($('sameEnd').checked)$('endAddress').value=$('startAddress').value});$('startAddress').addEventListener('input',()=>{if($('sameEnd').checked)$('endAddress').value=$('startAddress').value});
   $('generateBtn').addEventListener('click',generateAll);$('clearBtn').addEventListener('click',()=>{if(!confirm('Huidige planning wissen en opnieuw beginnen?'))return;state=defaultState();saveState();render();toast('Planning gewist.')});
   $('daySelect').addEventListener('change',e=>{state.selectedDay=e.target.value;saveState();render()});$('prevDay').onclick=()=>selectDay(-1);$('nextDay').onclick=()=>selectDay(1);
   $('routeList').addEventListener('click',e=>{const card=e.target.closest('.stopCard');if(!card)return;const action=e.target.closest('[data-action]')?.dataset.action;if(!action)return;const id=card.dataset.id;if(action==='visit')toggleVisit(id);if(action==='more')card.classList.toggle('expanded');if(action==='up')manualMove(id,-1);if(action==='down')manualMove(id,1);if(action==='move'){movingStopId=id;$('moveDate').value=state.selectedDay;$('moveModal').classList.remove('hidden')}});
-  $('reoptimizeBtn').onclick=reoptimizeCurrent;$('exportBtn').onclick=exportExcel;$('phoneBtn').onclick=showPhone;
+  $('reoptimizeBtn').onclick=reoptimizeCurrent;$('wholeRouteBtn').onclick=openWholeRoute;$('exportBtn').onclick=exportExcel;$('phoneBtn').onclick=showPhone;
   $('settingsBtn').onclick=()=>$('settingsModal').classList.remove('hidden');document.querySelector('.closeModal').onclick=()=>$('settingsModal').classList.add('hidden');document.querySelector('.closePhone').onclick=()=>$('phoneModal').classList.add('hidden');document.querySelector('.closeMove').onclick=()=>$('moveModal').classList.add('hidden');
   $('saveSettings').onclick=()=>{prefs.navApp=$('navApp').value;savePrefs();$('settingsModal').classList.add('hidden');render();toast('Instellingen opgeslagen.')};
   $('confirmMove').onclick=()=>{moveToDate(movingStopId,$('moveDate').value);$('moveModal').classList.add('hidden')};
@@ -179,6 +208,11 @@ function bind(){
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredInstall){deferredInstall.prompt();await deferredInstall.userChoice;deferredInstall=null;$('installBtn').classList.add('hidden')}};
   window.addEventListener('click',e=>{if(e.target.classList.contains('modal'))e.target.classList.add('hidden')});
 }
-async function init(){bind();render();await receiveHash();setTimeout(()=>$('splash').classList.add('hide'),700);setTimeout(()=>$('splash').remove(),1200);if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{})}
+async function init(){
+  bind();render();currentView=sessionStorage.getItem('planyx-lite-view')||defaultView();setView(currentView,{remember:false});
+  await receiveHash();if(location.hash.startsWith('#plan='))setView('route');
+  window.matchMedia('(max-width: 760px)').addEventListener?.('change',()=>{if(!sessionStorage.getItem('planyx-lite-view'))setView(defaultView(),{remember:false})});
+  setTimeout(()=>$('splash').classList.add('hide'),700);setTimeout(()=>$('splash').remove(),1200);if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{})
+}
 document.addEventListener('DOMContentLoaded',init);
 })();

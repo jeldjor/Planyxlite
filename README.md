@@ -28,3 +28,19 @@ Beide worden via CDN geladen; routegegevens zelf gaan niet via deze bibliotheken
 
 ## Naar telefoon
 Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde link via de systeemeigen deelknop, WhatsApp of kopieer de link. Op de telefoon opent dezelfde Planyx-lite website en worden alle dagen en routes direct lokaal ingeladen. QR en een `.planyx` overdrachtsbestand blijven beschikbaar als reserveopties.
+
+
+## v1.0.7
+- Knop heet `Optimaliseer route`.
+- Navigatie-app blijft per apparaat instelbaar: Google Maps, Waze of Apple Kaarten.
+- Nieuwe knop `Hele route` opent waar ondersteund de volledige dagroute in de gekozen navigatie-app. Google Maps ondersteunt tussenstops via Maps URLs; Waze en Apple Maps web-links ondersteunen geen volledige multi-stop overdracht, daarom blijft per-stop navigatie daarvoor leidend.
+
+## v1.0.8
+- Eén responsive PWA met twee schermen: `Import / Database` en `Route`.
+- Laptop opent standaard `Import / Database`; telefoon opent standaard `Route`.
+- Route-scherm toont alleen geplande dagen uit de huidige kalenderweek.
+- Dagpijlen blijven binnen die huidige week.
+- `Optimaliseer route` gebruikt TomTom opnieuw wanneer een API-key beschikbaar is; lokale optimalisatie is alleen fallback.
+- Navigatie-app is per apparaat instelbaar: Google Maps, Waze of Apple Kaarten.
+- `Hele route` blijft beschikbaar boven de dagroute; volledige multi-stop overdracht vanuit een webapp is het betrouwbaarst met Google Maps.
+- Geen Supabase of andere backend; planning wordt lokaal opgeslagen en via `Naar telefoon` overgedragen.

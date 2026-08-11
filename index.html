@@ -29,23 +29,16 @@
     </div>
   </header>
 
-  <main class="page">
-    <section class="hero">
-      <div>
-        <span class="eyebrow">DAGROUTE</span>
-        <h1 id="pageTitle">Vandaag</h1>
-        <p id="dateLabel" class="muted"></p>
-      </div>
-      <div class="dayNav">
-        <button id="prevDay" class="iconBtn" aria-label="Vorige dag">‹</button>
-        <select id="daySelect" aria-label="Kies dag"></select>
-        <button id="nextDay" class="iconBtn" aria-label="Volgende dag">›</button>
-      </div>
-    </section>
+  <nav class="appNav" aria-label="Planyx-lite schermen">
+    <button id="databaseTab" class="appNavBtn">Import / Database</button>
+    <button id="routeTab" class="appNavBtn">Route</button>
+  </nav>
 
+  <main class="page">
+    <section id="databaseView" class="appView">
     <section id="setupCard" class="card setupCard">
       <div class="sectionHead">
-        <div><h2>Planning maken</h2><p>Importeer Excel, kies start/eindadres en maak routes per afleverdatum.</p></div>
+        <div><h2>Import / Database</h2><p>Importeer Excel, stel start/eindadres in en maak de planning.</p></div>
         <button id="toggleSetup" class="ghost mobileOnly">Verbergen</button>
       </div>
       <div id="setupBody">
@@ -65,6 +58,21 @@
         <div class="requiredFields">Benodigde kolommen: d_name, d_phone, d_address1, d_zipcode, d_city, d_country, delivery_date</div>
       </div>
     </section>
+    </section>
+
+    <section id="routeView" class="appView">
+    <section class="hero routeHero">
+      <div>
+        <span class="eyebrow">DAGROUTE</span>
+        <h1 id="pageTitle">Vandaag</h1>
+        <p id="dateLabel" class="muted"></p>
+      </div>
+      <div class="dayNav">
+        <button id="prevDay" class="iconBtn" aria-label="Vorige dag">‹</button>
+        <select id="daySelect" aria-label="Kies dag"></select>
+        <button id="nextDay" class="iconBtn" aria-label="Volgende dag">›</button>
+      </div>
+    </section>
 
     <section id="summaryCard" class="summaryGrid hidden">
       <div class="metric"><b id="stopCount">0</b><span>stops</span></div>
@@ -74,7 +82,8 @@
     </section>
 
     <section id="routeActions" class="routeActions hidden">
-      <button id="reoptimizeBtn" class="ghost">↻ Resterende route optimaliseren</button>
+      <button id="reoptimizeBtn" class="ghost">↻ Optimaliseer route</button>
+      <button id="wholeRouteBtn" class="ghost">🚗 Hele route</button>
       <button id="phoneBtn" class="primary">Naar telefoon</button>
       <button id="exportBtn" class="ghost">Excel exporteren</button>
     </section>
@@ -83,8 +92,9 @@
 
     <section id="emptyState" class="emptyState">
       <div class="emptyIcon">⌖</div>
-      <h2>Nog geen route</h2>
-      <p>Importeer een Excel-bestand. De adressen worden pas zichtbaar nadat alle dagen zijn gegenereerd en geoptimaliseerd.</p>
+      <h2>Nog geen route deze week</h2>
+      <p>Maak op de laptop een planning of open een ontvangen Planyx-lite planning.</p>
+    </section>
     </section>
   </main>
 
