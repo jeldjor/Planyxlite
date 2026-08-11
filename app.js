@@ -61,10 +61,53 @@ async function geocodeAddress(query,country,key){
   const found={lat:Number(p.lat),lon:Number(p.lon),freeform:j.results?.[0]?.address?.freeformAddress||query};cache[cacheKey]=found;saveGeoCache(cache);return found
 }
 async function routeWholeDay(start,stops,end,key,optimize=true){
-  const points=[start,...stops.map(s=>s.position),end];if(points.length<2)throw new Error('Geen routepunten gevonden.');if(points.length-2>150)throw new Error('Een dag bevat meer dan 150 stops; splits deze dag op.');
-  const locs=points.map(p=>`${p.lat},${p.lon}`).join(':');const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','true');u.searchParams.set('routeType','fastest');u.searchParams.set('routeRepresentation','summaryOnly');if(optimize&&stops.length>1)u.searchParams.set('computeBestOrder','true');
+  if(!start||!end)throw new Error('Start- of eindpunt ontbreekt.');
+  if(stops.length>150)throw new Error('Een dag bevat meer dan 150 stops; splits deze dag op.');
+
+  let ordered=[...stops];
+
+  // Stap 1: laat TomTom de tussenstops op basis van het wegennet herschikken.
+  // optimizedWaypoints staat in de Calculate Route-response op ROOT-niveau,
+  // niet binnen routes[0]. In oudere Planyx-lite-versies werd daardoor nooit
+  // daadwerkelijk de door TomTom berekende volgorde toegepast.
+  if(optimize&&stops.length>1){
+    const optimizePoints=[start,...stops.map(s=>s.position),end];
+    const optimizeLocs=optimizePoints.map(p=>`${p.lat},${p.lon}`).join(':');
+    const ou=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${optimizeLocs}/json`);
+    ou.searchParams.set('key',key);
+    ou.searchParams.set('travelMode','car');
+    ou.searchParams.set('traffic','false');
+    // TomTom geeft aan dat computeBestOrder de beste resultaten geeft met shortest.
+    ou.searchParams.set('routeType','shortest');
+    ou.searchParams.set('routeRepresentation','none');
+    ou.searchParams.set('computeBestOrder','true');
+    const oj=await tomtomJson(ou);
+    const waypoints=oj.optimizedWaypoints;
+    if(!Array.isArray(waypoints)||waypoints.length!==stops.length){
+      throw new Error('TomTom gaf geen geldige geoptimaliseerde stopvolgorde terug.');
+    }
+    const next=new Array(stops.length);
+    for(const w of waypoints){
+      const pi=Number(w.providedIndex),oi=Number(w.optimizedIndex);
+      if(Number.isInteger(pi)&&Number.isInteger(oi)&&pi>=0&&pi<stops.length&&oi>=0&&oi<stops.length){
+        next[oi]=stops[pi];
+      }
+    }
+    if(next.some(x=>!x))throw new Error('TomTom gaf een onvolledige geoptimaliseerde stopvolgorde terug.');
+    ordered=next;
+  }
+
+  // Stap 2: bereken over die definitieve volgorde de echte snelste autoroute,
+  // zodat afstand, rijtijd en trajectgegevens bij dezelfde volgorde horen.
+  const finalPoints=[start,...ordered.map(s=>s.position),end];
+  const finalLocs=finalPoints.map(p=>`${p.lat},${p.lon}`).join(':');
+  const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${finalLocs}/json`);
+  u.searchParams.set('key',key);
+  u.searchParams.set('travelMode','car');
+  u.searchParams.set('traffic','true');
+  u.searchParams.set('routeType','fastest');
+  u.searchParams.set('routeRepresentation','summaryOnly');
   const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('Geen route gevonden.');
-  let ordered=[...stops];if(optimize&&Array.isArray(route.optimizedWaypoints)&&route.optimizedWaypoints.length===stops.length){ordered=[...stops];for(const w of route.optimizedWaypoints){if(Number.isInteger(w.providedIndex)&&Number.isInteger(w.optimizedIndex)&&stops[w.providedIndex])ordered[w.optimizedIndex]=stops[w.providedIndex]}}
   return {ordered,summary:route.summary,legs:route.legs||[]};
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
