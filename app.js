@@ -86,17 +86,21 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
     if(!Array.isArray(waypoints)||waypoints.length!==stops.length){
       throw new Error('TomTom gaf geen geldige geoptimaliseerde stopvolgorde terug.');
     }
-    // Correcte TomTom-mapping:
-    // providedIndex = index van de oorspronkelijke waypoint.
-    // optimizedIndex = positie van die waypoint in de geoptimaliseerde route.
-    // Dus: sorteer op optimizedIndex en pak daarna de stop via providedIndex.
+    // TomTom-documentatie (Calculate Route) geeft expliciet aan:
+    // [{providedIndex:0,optimizedIndex:1},{providedIndex:1,optimizedIndex:2},{providedIndex:2,optimizedIndex:0}]
+    // betekent dat de geoptimaliseerde reeks [1,2,0] is.
+    // Dus optimizedIndex is hier de INDEX UIT DE OORSPRONKELIJKE STOPLIJST
+    // die op positie providedIndex in de nieuwe route moet komen.
+    // De vorige versie draaide deze relatie om en bouwde daardoor de inverse route.
     const normalized=waypoints
       .map(w=>({providedIndex:Number(w.providedIndex),optimizedIndex:Number(w.optimizedIndex)}))
-      .sort((a,b)=>a.optimizedIndex-b.optimizedIndex);
+      .sort((a,b)=>a.providedIndex-b.providedIndex);
     if(normalized.some(w=>!Number.isInteger(w.providedIndex)||!Number.isInteger(w.optimizedIndex)))
       throw new Error('TomTom gaf ongeldige waypoint-indexen terug.');
-    const next=normalized.map(w=>stops[w.providedIndex]);
+    const next=normalized.map(w=>stops[w.optimizedIndex]);
     if(next.length!==stops.length||next.some(x=>!x))throw new Error('TomTom gaf een onvolledige geoptimaliseerde stopvolgorde terug.');
+    // Extra veiligheidscontrole: iedere stop moet exact één keer voorkomen.
+    if(new Set(next.map(s=>s.id)).size!==stops.length)throw new Error('TomTom gaf een dubbele of ontbrekende stop terug.');
     ordered=next;
   }
 
@@ -201,7 +205,7 @@ async function reoptimizeCurrent(){
     const before=dayStops(d).map(s=>s.id).join('|');
     await optimizeDay(d,key,!!key);
     const after=dayStops(d).map(s=>s.id).join('|');
-    if(state.days[d]?.summary)state.days[d].summary.optimized=true;
+    if(state.days[d]?.summary){state.days[d].summary.optimized=true;state.days[d].summary.orderBefore=before;state.days[d].summary.orderAfter=after;}
     saveState();render();
     toast(before===after?`TomTom heeft dezelfde volgorde als beste route behouden.`:`Route ${formatDay(d,true)} is geoptimaliseerd en herschikt.`);
   }catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}

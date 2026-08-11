@@ -46,6 +46,6 @@ Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde l
 - Geen Supabase of andere backend; planning wordt lokaal opgeslagen en via `Naar telefoon` overgedragen.
 
 
-## v1.0.13
+## v1.0.14
 - Correcte TomTom optimizedWaypoints-mapping: sorteren op optimizedIndex en oorspronkelijke stop kiezen via providedIndex.
 - Optimalisatie gebruikt routeType=fastest.
