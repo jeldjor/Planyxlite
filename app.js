@@ -103,28 +103,29 @@ function defaultView(){return isPhoneLayout()?'route':'database'}
 
 async function generateAll(){
   if(!state.stops.length)return toast('Importeer eerst een Excel-bestand.');
-  state.planningReady=false;saveState();render();const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
-  prefs={...prefs,tomtomKey:key,startAddress:start,endAddress:end,sameEnd:same};savePrefs();state.startAddress=start;state.endAddress=end;state.sameEnd=same;
+  state.planningReady=false;saveState();render();
+  const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');
+  const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');
+  const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
+  prefs={...prefs,tomtomKey:key,startAddress:start,endAddress:end,sameEnd:same};savePrefs();
+  state.startAddress=start;state.endAddress=end;state.sameEnd=same;
   try{
     for(let run=0;run<3;run++){
       try{
         setBusy(run?'TomTom limiet hersteld · automatisch doorgaan…':'Startadres controleren…');
-        state.startPoint=state.startPoint||await geocodeAddress(start,'',key);state.endPoint=same?state.startPoint:(state.endPoint||await geocodeAddress(end,'',key));saveState();
+        state.startPoint=state.startPoint||await geocodeAddress(start,'',key);
+        state.endPoint=same?state.startPoint:(state.endPoint||await geocodeAddress(end,'',key));saveState();
         const ungeocoded=state.stops.filter(s=>!s.position);let done=0;
         for(const s of ungeocoded){setBusy(`Adressen zoeken ${++done}/${ungeocoded.length}`);s.position=await geocodeAddress(addressOf(s),s.d_country,key);saveState()}
         buildDayShells();const dates=Object.keys(state.days).sort();
-        // Geef TomTom na het geocoderen extra ruimte voordat de routeberekeningen beginnen.
-        if(dates.length){setBusy('Alle adressen gevonden · routes voorbereiden…');await sleep(3500)}
-        for(let di=0;di<dates.length;di++){
-          const date=dates[di];
-          setBusy(`Dag ${di+1}/${dates.length} · ${formatDay(date,true)} optimaliseren…`);
-          await optimizeDay(date,key,true);saveState();
-          // Ook tussen dagen bewust pauzeren; betrouwbaarheid gaat boven snelheid.
-          if(di<dates.length-1)await sleep(3000);
+        // Genereer alleen de dagplanning. Bewaar per dag de volgorde uit het Excel-bestand.
+        for(const date of dates){
+          const day=state.stops.filter(s=>s.delivery_date===date);
+          day.forEach((s,i)=>{s.order=i+1;s.legKm=null;s.legMin=null});
+          state.days[date]={date,generated:true,summary:{km:null,min:null,live:false,optimized:false,updatedAt:new Date().toISOString()}};
         }
-        const incomplete=dates.filter(d=>!state.days[d]?.generated||!state.days[d]?.summary);
-        if(incomplete.length)throw new Error(`Niet alle dagen zijn afgerond (${incomplete.length} resterend).`);
-        state.planningReady=true;saveState();render();setView('route');toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn gegenereerd en geoptimaliseerd.`);return;
+        state.planningReady=true;saveState();render();setView('route');
+        toast(`Planning gegenereerd voor ${dates.length} dag${dates.length===1?'':'en'}. Klik per dag op Optimaliseer route.`);return;
       }catch(e){
         if(e?.code==='TOMTOM_RATE_LIMIT'&&run<2){setBusy('TomTom limiet · automatisch langer wachten en doorgaan…');saveState();await sleep(run===0?30000:60000);continue}
         throw e;
@@ -132,6 +133,7 @@ async function generateAll(){
     }
   }catch(e){console.error(e);alert(e?.code==='TOMTOM_RATE_LIMIT'?'TomTom blijft de API-limiet blokkeren nadat Planyx-lite meerdere keren automatisch heeft gewacht. Reeds gevonden adressen zijn bewaard; probeer later nogmaals.':(e.message||String(e)))}finally{clearBusy()}
 }
+
 async function optimizeDay(date,key,withLive){
   const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position);
   let combined=[...visited];let totalKm=0,totalMin=null,liveOk=withLive&&!!key;
@@ -149,7 +151,7 @@ async function reoptimizeCurrent(){
   const d=state.selectedDay;if(!d)return;
   const key=prefs.tomtomKey||$('tomtomKey').value.trim();
   const btn=$('reoptimizeBtn'),oldText=btn.textContent;btn.disabled=true;btn.textContent='Optimaliseren…';
-  try{await optimizeDay(d,key,!!key);saveState();render();toast('Route geoptimaliseerd.')}catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}
+  try{await optimizeDay(d,key,!!key);if(state.days[d]?.summary)state.days[d].summary.optimized=true;saveState();render();toast(`Route ${formatDay(d,true)} is geoptimaliseerd.`);}catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}
 }
 
 function dayStops(date){return state.stops.filter(s=>s.delivery_date===date).sort((a,b)=>(a.order||9999)-(b.order||9999))}
