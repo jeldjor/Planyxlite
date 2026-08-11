@@ -4,7 +4,7 @@ const $=id=>document.getElementById(id);
 const STORE='planyx-lite-state-v1';
 const PREF='planyx-lite-prefs-v1';
 const REQUIRED=['d_name','d_phone','d_address1','d_zipcode','d_city','d_country','delivery_date'];
-let deferredInstall=null, movingStopId=null, transferLink='', currentView='';
+let movingStopId=null, transferLink='', currentView='';
 let state=loadState();
 let prefs=loadPrefs();
 
@@ -272,14 +272,13 @@ function bind(){
   $('confirmMove').onclick=()=>{moveToDate(movingStopId,$('moveDate').value);$('moveModal').classList.add('hidden')};
   $('shareLinkBtn').onclick=sharePhoneLink;$('whatsappBtn').onclick=shareWhatsApp;$('copyLinkBtn').onclick=async()=>{if(!transferLink)transferLink=await makePhoneLink();try{await navigator.clipboard.writeText(transferLink);toast('Link gekopieerd. Stuur hem naar je telefoon.')}catch{prompt('Kopieer deze link:',transferLink)}};$('transferFileBtn').onclick=downloadTransfer;
   $('toggleSetup').onclick=()=>{const b=$('setupBody'),hide=!b.classList.contains('hidden');b.classList.toggle('hidden',hide);$('toggleSetup').textContent=hide?'Tonen':'Verbergen'};
-  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredInstall){deferredInstall.prompt();await deferredInstall.userChoice;deferredInstall=null;$('installBtn').classList.add('hidden')}};
   window.addEventListener('click',e=>{if(e.target.classList.contains('modal'))e.target.classList.add('hidden')});
 }
 async function init(){
   bind();render();currentView=sessionStorage.getItem('planyx-lite-view')||defaultView();setView(currentView,{remember:false});
   await receiveHash();if(location.hash.startsWith('#plan='))setView('route');
   window.matchMedia('(max-width: 760px)').addEventListener?.('change',()=>{if(!sessionStorage.getItem('planyx-lite-view'))setView(defaultView(),{remember:false})});
-  setTimeout(()=>$('splash').classList.add('hide'),700);setTimeout(()=>$('splash').remove(),1200);if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{})
+  setTimeout(()=>$('splash').classList.add('hide'),700);setTimeout(()=>$('splash').remove(),1200);if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').then(r=>r.update()).catch(()=>{})
 }
 document.addEventListener('DOMContentLoaded',init);
 })();
