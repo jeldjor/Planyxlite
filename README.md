@@ -6,7 +6,7 @@ Lichte PWA-routeplanner zonder Supabase.
 1. Open de app op laptop.
 2. Vul standaard start- en eindadres en TomTom API-key in.
 3. Importeer Excel/CSV met minimaal: `d_name`, `d_phone`, `d_address1`, `d_zipcode`, `d_city`, `d_country`, `delivery_date`.
-4. Klik **Genereer en optimaliseer planning**. De app groepeert per `delivery_date`, geocodeert via TomTom en genereert en optimaliseert alle dagen achter elkaar.
+4. Klik **Genereer planning**. De app groepeert per `delivery_date`, geocodeert via TomTom en genereert alle dagen achter elkaar.
 5. Klik **Open op telefoon** en scan de QR-code. Als de planning te groot is, gebruik de overdrachtslink of `.planyx`-bestand.
 6. Op telefoon: **Navigeren**, **Bezocht**, of **Naar andere dag**.
 7. Exporteer op telefoon naar Excel. De export bevat de zeven bronvelden plus `bezocht` (Ja/Nee), waarbij `delivery_date` de uiteindelijke datum is.
@@ -35,7 +35,7 @@ Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde l
 - Navigatie-app blijft per apparaat instelbaar: Google Maps, Waze of Apple Kaarten.
 - Nieuwe knop `Hele route` opent waar ondersteund de volledige dagroute in de gekozen navigatie-app. Google Maps ondersteunt tussenstops via Maps URLs; Waze en Apple Maps web-links ondersteunen geen volledige multi-stop overdracht, daarom blijft per-stop navigatie daarvoor leidend.
 
-## v1.0.8
+## v1.0.9
 - Eén responsive PWA met twee schermen: `Import / Database` en `Route`.
 - Laptop opent standaard `Import / Database`; telefoon opent standaard `Route`.
 - Route-scherm toont alleen geplande dagen uit de huidige kalenderweek.

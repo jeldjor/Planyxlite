@@ -68,7 +68,7 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
   return {ordered,summary:route.summary,legs:route.legs||[]};
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
-function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Genereer en optimaliseer planning'}
+function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Genereer planning'}
 
 async function importExcel(file){
   if(!window.XLSX)throw new Error('Excel-module is nog niet geladen. Controleer de internetverbinding en probeer opnieuw.');
@@ -78,7 +78,7 @@ async function importExcel(file){
   const stops=[];rows.forEach((r,i)=>{const deliveryDate=isoDate(r.delivery_date);if(!deliveryDate)return;stops.push({id:uid(r,i),d_name:String(r.d_name||'').trim(),d_phone:String(r.d_phone||'').trim(),d_address1:String(r.d_address1||'').trim(),d_zipcode:String(r.d_zipcode||'').trim(),d_city:String(r.d_city||'').trim(),d_country:String(r.d_country||'').trim(),delivery_date:deliveryDate,original_delivery_date:deliveryDate,visited:false,position:null,order:0,legKm:null,legMin:null})});
   if(!stops.length)throw new Error('Geen regels met een geldige delivery_date gevonden.');
   state={...defaultState(),sourceName:file.name,stops,startAddress:$('startAddress').value.trim(),sameEnd:$('sameEnd').checked,endAddress:$('sameEnd').checked?$('startAddress').value.trim():$('endAddress').value.trim()};
-  buildDayShells();state.planningReady=false;saveState();$('importStatus').textContent=`${stops.length} afleveringen ingelezen uit ${file.name}. Klik op ‘Genereer en optimaliseer planning’.`;render();
+  buildDayShells();state.planningReady=false;saveState();$('importStatus').textContent=`${stops.length} afleveringen ingelezen uit ${file.name}. Klik op ‘Genereer planning’.`;render();
 }
 function buildDayShells(){const old=state.days||{};const dates=[...new Set(state.stops.map(s=>s.delivery_date).filter(Boolean))].sort();const days={};for(const d of dates){days[d]=old[d]||{date:d,summary:null,generated:false};}state.days=days;if(!state.selectedDay||!days[state.selectedDay])state.selectedDay=dates.includes(todayIso())?todayIso():dates[0]||''}
 function todayIso(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
@@ -168,7 +168,7 @@ function render(){
     $('routeList').innerHTML=stops.map((s,i)=>stopHtml(s,i)).join('');
   }
   $('startAddress').value=state.startAddress||prefs.startAddress||'';$('sameEnd').checked=state.sameEnd??prefs.sameEnd;$('endAddress').value=state.endAddress||prefs.endAddress||'';$('endAddress').disabled=$('sameEnd').checked;$('tomtomKey').value=prefs.tomtomKey||'';$('navApp').value=prefs.navApp||'google';
-  if(state.stops.length&&!ready)$('importStatus').textContent=`${state.stops.length} afleveringen ingelezen${state.sourceName?' uit '+state.sourceName:''}. Klaar om te genereren en optimaliseren.`;
+  if(state.stops.length&&!ready)$('importStatus').textContent=`${state.stops.length} afleveringen ingelezen${state.sourceName?' uit '+state.sourceName:''}. Klaar om planning te genereren.`;
   else if(state.stops.length&&ready)$('importStatus').textContent=`Planning gereed: ${state.stops.length} afleveringen verdeeld over ${Object.keys(state.days).length} dag(en).`;
 }
 function stopHtml(s,i){const km=s.legKm!=null?`${s.legKm.toFixed(1)} km vanaf vorige`:'';const phone=s.d_phone?`<a href="tel:${esc(s.d_phone)}">☎ Bellen</a>`:'';return `<article class="stopCard ${s.visited?'visited':''}" data-id="${esc(s.id)}"><div class="stopNo">${s.visited?'✓':(s.order||i+1)}</div><div class="stopInfo"><div class="stopName">${esc(s.d_name||'Naam onbekend')}</div><div class="stopAddress">${esc(s.d_address1)} · ${esc(s.d_zipcode)} ${esc(s.d_city)}</div><div class="stopMeta">${s.d_phone?`<span>☎ ${esc(s.d_phone)}</span>`:''}<span>${esc(s.d_country)}</span>${km?`<span>${km}</span>`:''}</div></div><div class="stopButtons"><a class="navigate" href="${navUrl(s)}" target="_blank" rel="noopener">Navigeren</a><button class="visitBtn ${s.visited?'active':''}" data-action="visit">${s.visited?'Bezocht ✓':'Bezocht'}</button><button class="moreBtn" data-action="more">•••</button></div><div class="stopMove"><button data-action="move">Naar andere dag</button><button data-action="up">↑ Omhoog</button><button data-action="down">↓ Omlaag</button></div></article>`}
