@@ -202,8 +202,27 @@ async function reoptimizeCurrent(){
 
 function dayStops(date){return state.stops.filter(s=>s.delivery_date===date).sort((a,b)=>(a.order||9999)-(b.order||9999))}
 function navUrl(s){const q=encodeURIComponent(addressOf(s));if(prefs.navApp==='apple')return `https://maps.apple.com/?daddr=${q}&dirflg=d`;if(prefs.navApp==='waze')return `https://www.waze.com/ul?q=${q}&navigate=yes`;return `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving`}
-function fullRouteUrl(){const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return '';const origin=state.startAddress||'';const destination=state.endAddress||addressOf(stops[stops.length-1]);if(prefs.navApp==='google'){const mids=stops.slice(0,-1).slice(0,9).map(addressOf);const u=new URL('https://www.google.com/maps/dir/');u.searchParams.set('api','1');if(origin)u.searchParams.set('origin',origin);u.searchParams.set('destination',destination);u.searchParams.set('travelmode','driving');if(mids.length)u.searchParams.set('waypoints',mids.join('|'));return u.toString()}return ''}
-function openWholeRoute(){const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return toast('Geen resterende stops.');if(prefs.navApp!=='google'){const name=prefs.navApp==='waze'?'Waze':'Apple Kaarten';alert(`${name} ondersteunt vanuit een webapp geen complete multi-stop route. Planyx-lite toont daarom de volledige volgorde zelf; gebruik Navigeren per stop. Kies Google Maps als je de dagroute met tussenstops in één kaart wilt openen.`);return}const u=fullRouteUrl();if(!u)return;window.open(u,'_blank','noopener')}
+function fullRouteUrl(){
+  const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return '';
+  const origin=(state.startAddress||'').trim();
+  const configuredEnd=(state.endAddress||'').trim();
+  if(prefs.navApp==='google'){
+    // Als er een apart eindadres is, zijn ALLE klanten tussenstops. Zonder eindadres is de laatste klant de bestemming.
+    const destination=configuredEnd||addressOf(stops[stops.length-1]);
+    const mids=(configuredEnd?stops:stops.slice(0,-1)).map(addressOf);
+    // Google Maps URLs ondersteunen maximaal 9 waypoints. Nooit stilletjes klanten afkappen.
+    if(mids.length>9)return {tooMany:true,count:mids.length,destination,origin};
+    const u=new URL('https://www.google.com/maps/dir/');u.searchParams.set('api','1');if(origin)u.searchParams.set('origin',origin);u.searchParams.set('destination',destination);u.searchParams.set('travelmode','driving');if(mids.length)u.searchParams.set('waypoints',mids.join('|'));return {url:u.toString(),tooMany:false}
+  }
+  return ''
+}
+function openWholeRoute(){
+  const stops=dayStops(state.selectedDay).filter(s=>!s.visited);if(!stops.length)return toast('Geen resterende stops.');
+  if(prefs.navApp!=='google'){const name=prefs.navApp==='waze'?'Waze':'Apple Kaarten';alert(`${name} ondersteunt vanuit een webapp geen complete multi-stop route. Planyx-lite toont daarom de volledige volgorde zelf; gebruik Navigeren per stop. Kies Google Maps als je de dagroute met tussenstops in één kaart wilt openen.`);return}
+  const result=fullRouteUrl();if(!result)return;
+  if(result.tooMany){alert(`Deze dag heeft ${stops.length} resterende klanten. Google Maps kan via één gedeelde route maximaal 9 tussenstops verwerken. Planyx-lite kapt daarom geen klanten meer stilletjes af. Gebruik Navigeren per stop, of verdeel de route in delen.`);return}
+  window.open(result.url,'_blank','noopener')
+}
 function minutesText(min){if(min==null||!isFinite(min))return '—';const h=Math.floor(min/60),m=Math.round(min%60);return h?`${h}u ${m}m`:`${m} min`}
 function render(){
   buildDayShells();const ready=state.planningReady===true;const dates=ready?currentWeekDates():[];
