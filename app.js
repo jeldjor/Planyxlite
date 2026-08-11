@@ -8,7 +8,7 @@ let deferredInstall=null, movingStopId=null, transferLink='';
 let state=loadState();
 let prefs=loadPrefs();
 
-function defaultState(){return {version:1,sourceName:'',startAddress:'',endAddress:'',sameEnd:true,startPoint:null,endPoint:null,stops:[],days:{},selectedDay:'',updatedAt:null}}
+function defaultState(){return {version:1,sourceName:'',startAddress:'',endAddress:'',sameEnd:true,startPoint:null,endPoint:null,stops:[],days:{},selectedDay:'',planningReady:false,updatedAt:null}}
 function loadState(){try{return {...defaultState(),...JSON.parse(localStorage.getItem(STORE)||'{}')}}catch{return defaultState()}}
 function saveState(){state.updatedAt=new Date().toISOString();localStorage.setItem(STORE,JSON.stringify(state))}
 function loadPrefs(){try{return {tomtomKey:'',navApp:'google',startAddress:'',endAddress:'',sameEnd:true,...JSON.parse(localStorage.getItem(PREF)||'{}')}}catch{return {tomtomKey:'',navApp:'google',startAddress:'',endAddress:'',sameEnd:true}}}
@@ -68,7 +68,7 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
   return {ordered,summary:route.summary,legs:route.legs||[]};
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
-function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Maak planning'}
+function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Genereer en optimaliseer planning'}
 
 async function importExcel(file){
   if(!window.XLSX)throw new Error('Excel-module is nog niet geladen. Controleer de internetverbinding en probeer opnieuw.');
@@ -78,13 +78,14 @@ async function importExcel(file){
   const stops=[];rows.forEach((r,i)=>{const deliveryDate=isoDate(r.delivery_date);if(!deliveryDate)return;stops.push({id:uid(r,i),d_name:String(r.d_name||'').trim(),d_phone:String(r.d_phone||'').trim(),d_address1:String(r.d_address1||'').trim(),d_zipcode:String(r.d_zipcode||'').trim(),d_city:String(r.d_city||'').trim(),d_country:String(r.d_country||'').trim(),delivery_date:deliveryDate,original_delivery_date:deliveryDate,visited:false,position:null,order:0,legKm:null,legMin:null})});
   if(!stops.length)throw new Error('Geen regels met een geldige delivery_date gevonden.');
   state={...defaultState(),sourceName:file.name,stops,startAddress:$('startAddress').value.trim(),sameEnd:$('sameEnd').checked,endAddress:$('sameEnd').checked?$('startAddress').value.trim():$('endAddress').value.trim()};
-  buildDayShells();saveState();$('importStatus').textContent=`${stops.length} afleveringen geladen uit ${file.name}.`;render();
+  buildDayShells();state.planningReady=false;saveState();$('importStatus').textContent=`${stops.length} afleveringen ingelezen uit ${file.name}. Klik op ‘Genereer en optimaliseer planning’.`;render();
 }
 function buildDayShells(){const old=state.days||{};const dates=[...new Set(state.stops.map(s=>s.delivery_date).filter(Boolean))].sort();const days={};for(const d of dates){days[d]=old[d]||{date:d,summary:null,generated:false};}state.days=days;if(!state.selectedDay||!days[state.selectedDay])state.selectedDay=dates.includes(todayIso())?todayIso():dates[0]||''}
 function todayIso(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 
 async function generateAll(){
-  if(!state.stops.length)return toast('Importeer eerst een Excel-bestand.');const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
+  if(!state.stops.length)return toast('Importeer eerst een Excel-bestand.');
+  state.planningReady=false;saveState();render();const key=$('tomtomKey').value.trim();if(!key)return toast('Vul je TomTom API-key in.');const start=$('startAddress').value.trim();if(!start)return toast('Vul een startadres in.');const same=$('sameEnd').checked,end=same?start:$('endAddress').value.trim();if(!end)return toast('Vul een eindadres in.');
   prefs={...prefs,tomtomKey:key,startAddress:start,endAddress:end,sameEnd:same};savePrefs();state.startAddress=start;state.endAddress=end;state.sameEnd=same;
   try{
     for(let run=0;run<3;run++){
@@ -103,7 +104,9 @@ async function generateAll(){
           // Ook tussen dagen bewust pauzeren; betrouwbaarheid gaat boven snelheid.
           if(di<dates.length-1)await sleep(3000);
         }
-        saveState();render();toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn volledig geoptimaliseerd.`);return;
+        const incomplete=dates.filter(d=>!state.days[d]?.generated||!state.days[d]?.summary);
+        if(incomplete.length)throw new Error(`Niet alle dagen zijn afgerond (${incomplete.length} resterend).`);
+        state.planningReady=true;saveState();render();toast(`Alle ${dates.length} dagroute${dates.length===1?'':'s'} zijn gegenereerd en geoptimaliseerd.`);return;
       }catch(e){
         if(e?.code==='TOMTOM_RATE_LIMIT'&&run<2){setBusy('TomTom limiet · automatisch langer wachten en doorgaan…');saveState();await sleep(run===0?30000:60000);continue}
         throw e;
@@ -130,14 +133,15 @@ function dayStops(date){return state.stops.filter(s=>s.delivery_date===date).sor
 function navUrl(s){const q=encodeURIComponent(addressOf(s));if(prefs.navApp==='apple')return `https://maps.apple.com/?daddr=${q}&dirflg=d`;if(prefs.navApp==='waze')return `https://www.waze.com/ul?q=${q}&navigate=yes`;return `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving`}
 function minutesText(min){if(min==null||!isFinite(min))return '—';const h=Math.floor(min/60),m=Math.round(min%60);return h?`${h}u ${m}m`:`${m} min`}
 function render(){
-  buildDayShells();const dates=Object.keys(state.days).sort();$('daySelect').innerHTML=dates.length?dates.map(d=>`<option value="${d}" ${d===state.selectedDay?'selected':''}>${esc(formatDay(d,true))}</option>`).join(''):'<option>Geen planning</option>';
-  const d=state.selectedDay;$('pageTitle').textContent=d===todayIso()?'Vandaag':(d?formatDay(d,true):'Vandaag');$('dateLabel').textContent=d?formatDay(d):formatDay(todayIso());
-  const stops=d?dayStops(d):[],has=stops.length>0;$('emptyState').classList.toggle('hidden',has);$('summaryCard').classList.toggle('hidden',!has);$('routeActions').classList.toggle('hidden',!has);$('routeList').innerHTML='';
+  buildDayShells();const ready=state.planningReady===true;const dates=ready?Object.keys(state.days).sort():[];$('daySelect').innerHTML=dates.length?dates.map(d=>`<option value="${d}" ${d===state.selectedDay?'selected':''}>${esc(formatDay(d,true))}</option>`).join(''):'<option>Geen planning</option>';
+  const d=ready?state.selectedDay:'';$('pageTitle').textContent=d===todayIso()?'Vandaag':(d?formatDay(d,true):'Vandaag');$('dateLabel').textContent=d?formatDay(d):formatDay(todayIso());
+  const stops=ready&&d?dayStops(d):[],has=ready&&stops.length>0;$('emptyState').classList.toggle('hidden',has);$('summaryCard').classList.toggle('hidden',!has);$('routeActions').classList.toggle('hidden',!has);$('routeList').innerHTML='';
   if(has){const visited=stops.filter(s=>s.visited).length,sum=state.days[d]?.summary;$('stopCount').textContent=stops.length;$('visitedCount').textContent=visited;$('distanceTotal').textContent=sum?.km!=null?sum.km.toFixed(0):'—';$('timeTotal').textContent=minutesText(sum?.min);
     $('routeList').innerHTML=stops.map((s,i)=>stopHtml(s,i)).join('');
   }
   $('startAddress').value=state.startAddress||prefs.startAddress||'';$('sameEnd').checked=state.sameEnd??prefs.sameEnd;$('endAddress').value=state.endAddress||prefs.endAddress||'';$('endAddress').disabled=$('sameEnd').checked;$('tomtomKey').value=prefs.tomtomKey||'';$('navApp').value=prefs.navApp||'google';
-  if(state.stops.length)$('importStatus').textContent=`${state.stops.length} afleveringen geladen${state.sourceName?' uit '+state.sourceName:''}.`;
+  if(state.stops.length&&!ready)$('importStatus').textContent=`${state.stops.length} afleveringen ingelezen${state.sourceName?' uit '+state.sourceName:''}. Klaar om te genereren en optimaliseren.`;
+  else if(state.stops.length&&ready)$('importStatus').textContent=`Planning gereed: ${state.stops.length} afleveringen verdeeld over ${Object.keys(state.days).length} dag(en).`;
 }
 function stopHtml(s,i){const km=s.legKm!=null?`${s.legKm.toFixed(1)} km vanaf vorige`:'';const phone=s.d_phone?`<a href="tel:${esc(s.d_phone)}">☎ Bellen</a>`:'';return `<article class="stopCard ${s.visited?'visited':''}" data-id="${esc(s.id)}"><div class="stopNo">${s.visited?'✓':(s.order||i+1)}</div><div class="stopInfo"><div class="stopName">${esc(s.d_name||'Naam onbekend')}</div><div class="stopAddress">${esc(s.d_address1)} · ${esc(s.d_zipcode)} ${esc(s.d_city)}</div><div class="stopMeta">${s.d_phone?`<span>☎ ${esc(s.d_phone)}</span>`:''}<span>${esc(s.d_country)}</span>${km?`<span>${km}</span>`:''}</div></div><div class="stopButtons"><a class="navigate" href="${navUrl(s)}" target="_blank" rel="noopener">Navigeren</a><button class="visitBtn ${s.visited?'active':''}" data-action="visit">${s.visited?'Bezocht ✓':'Bezocht'}</button><button class="moreBtn" data-action="more">•••</button></div><div class="stopMove"><button data-action="move">Naar andere dag</button><button data-action="up">↑ Omhoog</button><button data-action="down">↓ Omlaag</button></div></article>`}
 function selectDay(delta){const ds=Object.keys(state.days).sort();if(!ds.length)return;let i=Math.max(0,ds.indexOf(state.selectedDay));i=Math.max(0,Math.min(ds.length-1,i+delta));state.selectedDay=ds[i];saveState();render()}
@@ -147,7 +151,7 @@ function moveToDate(id,date){const s=state.stops.find(x=>x.id===id);if(!s||!date
 
 function exportExcel(){if(!window.XLSX)return toast('Excel-module niet beschikbaar.');if(!state.stops.length)return;const rows=[...state.stops].sort((a,b)=>a.delivery_date.localeCompare(b.delivery_date)||(a.order||0)-(b.order||0)).map(s=>({d_name:s.d_name,d_phone:s.d_phone,d_address1:s.d_address1,d_zipcode:s.d_zipcode,d_city:s.d_city,d_country:s.d_country,delivery_date:s.delivery_date,bezocht:s.visited?'Ja':'Nee'}));const ws=XLSX.utils.json_to_sheet(rows,{header:[...REQUIRED,'bezocht']});ws['!cols']=[{wch:28},{wch:16},{wch:30},{wch:12},{wch:22},{wch:14},{wch:16},{wch:10}];const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Routes');XLSX.writeFile(wb,`Planyx-lite resultaat ${todayIso()}.xlsx`)}
 function compactPayload(){return {v:1,s:state.startAddress,e:state.endAddress,se:state.sameEnd,sp:state.startPoint,ep:state.endPoint,st:state.stops.map(x=>({i:x.id,n:x.d_name,p:x.d_phone,a:x.d_address1,z:x.d_zipcode,c:x.d_city,o:x.d_country,d:x.delivery_date,od:x.original_delivery_date,v:x.visited?1:0,pos:x.position,r:x.order,k:x.legKm,m:x.legMin})),dy:state.days,sd:state.selectedDay}}
-function payloadToState(p){if(!p||p.v!==1||!Array.isArray(p.st))throw new Error('Ongeldige Planyx-lite overdracht.');state={...defaultState(),startAddress:p.s||'',endAddress:p.e||'',sameEnd:p.se!==false,startPoint:p.sp||null,endPoint:p.ep||null,selectedDay:p.sd||'',days:p.dy||{},stops:p.st.map(x=>({id:x.i,d_name:x.n||'',d_phone:x.p||'',d_address1:x.a||'',d_zipcode:x.z||'',d_city:x.c||'',d_country:x.o||'',delivery_date:x.d,original_delivery_date:x.od||x.d,visited:!!x.v,position:x.pos||null,order:x.r||0,legKm:x.k??null,legMin:x.m??null}))};buildDayShells();saveState();render()}
+function payloadToState(p){if(!p||p.v!==1||!Array.isArray(p.st))throw new Error('Ongeldige Planyx-lite overdracht.');state={...defaultState(),startAddress:p.s||'',endAddress:p.e||'',sameEnd:p.se!==false,startPoint:p.sp||null,endPoint:p.ep||null,selectedDay:p.sd||'',days:p.dy||{},planningReady:true,stops:p.st.map(x=>({id:x.i,d_name:x.n||'',d_phone:x.p||'',d_address1:x.a||'',d_zipcode:x.z||'',d_city:x.c||'',d_country:x.o||'',delivery_date:x.d,original_delivery_date:x.od||x.d,visited:!!x.v,position:x.pos||null,order:x.r||0,legKm:x.k??null,legMin:x.m??null}))};buildDayShells();saveState();render()}
 function bytesToB64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function b64ToBytes(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s),out=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i);return out}
 async function compressText(text){if('CompressionStream'in window){const cs=new CompressionStream('gzip');const ab=await new Response(new Blob([text]).stream().pipeThrough(cs)).arrayBuffer();return 'g'+bytesToB64(new Uint8Array(ab))}return 'j'+bytesToB64(new TextEncoder().encode(text))}
