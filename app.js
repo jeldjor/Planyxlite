@@ -77,8 +77,8 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
     ou.searchParams.set('key',key);
     ou.searchParams.set('travelMode','car');
     ou.searchParams.set('traffic','false');
-    // TomTom geeft aan dat computeBestOrder de beste resultaten geeft met shortest.
-    ou.searchParams.set('routeType','shortest');
+    // Optimaliseer op de snelste autoroute; dit past bij een koeriersplanning.
+    ou.searchParams.set('routeType','fastest');
     ou.searchParams.set('routeRepresentation','none');
     ou.searchParams.set('computeBestOrder','true');
     const oj=await tomtomJson(ou);
@@ -86,12 +86,16 @@ async function routeWholeDay(start,stops,end,key,optimize=true){
     if(!Array.isArray(waypoints)||waypoints.length!==stops.length){
       throw new Error('TomTom gaf geen geldige geoptimaliseerde stopvolgorde terug.');
     }
-    // TomTom-documentatie: de optimized sequence wordt gevormd door de
-    // optimizedIndex-waarden in de responsevolgorde. Voorbeeld:
-    // [{providedIndex:0,optimizedIndex:1},{providedIndex:1,optimizedIndex:2},{providedIndex:2,optimizedIndex:0}]
-    // betekent oorspronkelijke stops [0,1,2] -> nieuwe volgorde [1,2,0].
-    // De eerdere code draaide deze mapping om en maakte daardoor een verkeerde/ogenschijnlijk onveranderde route.
-    const next=waypoints.map(w=>stops[Number(w.optimizedIndex)]);
+    // Correcte TomTom-mapping:
+    // providedIndex = index van de oorspronkelijke waypoint.
+    // optimizedIndex = positie van die waypoint in de geoptimaliseerde route.
+    // Dus: sorteer op optimizedIndex en pak daarna de stop via providedIndex.
+    const normalized=waypoints
+      .map(w=>({providedIndex:Number(w.providedIndex),optimizedIndex:Number(w.optimizedIndex)}))
+      .sort((a,b)=>a.optimizedIndex-b.optimizedIndex);
+    if(normalized.some(w=>!Number.isInteger(w.providedIndex)||!Number.isInteger(w.optimizedIndex)))
+      throw new Error('TomTom gaf ongeldige waypoint-indexen terug.');
+    const next=normalized.map(w=>stops[w.providedIndex]);
     if(next.length!==stops.length||next.some(x=>!x))throw new Error('TomTom gaf een onvolledige geoptimaliseerde stopvolgorde terug.');
     ordered=next;
   }

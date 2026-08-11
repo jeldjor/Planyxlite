@@ -44,3 +44,8 @@ Na het genereren van de routes kies je **Naar telefoon**. Deel de gegenereerde l
 - Navigatie-app is per apparaat instelbaar: Google Maps, Waze of Apple Kaarten.
 - `Hele route` blijft beschikbaar boven de dagroute; volledige multi-stop overdracht vanuit een webapp is het betrouwbaarst met Google Maps.
 - Geen Supabase of andere backend; planning wordt lokaal opgeslagen en via `Naar telefoon` overgedragen.
+
+
+## v1.0.13
+- Correcte TomTom optimizedWaypoints-mapping: sorteren op optimizedIndex en oorspronkelijke stop kiezen via providedIndex.
+- Optimalisatie gebruikt routeType=fastest.
