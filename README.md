@@ -1,25 +1,21 @@
-# Planyx-lite v1.0.18
+# Planyx-lite v1.0.19
 
-Schone lokale PWA-versie van Planyx-lite, zonder Supabase.
+Lichte routeplanner/PWA zonder Supabase.
 
-## Werkwijze
-1. Open **Import / Database** op de laptop.
-2. Vul startadres, eindadres en TomTom API-key in.
-3. Importeer Excel met: `d_name`, `d_phone`, `d_address1`, `d_zipcode`, `d_city`, `d_country`, `delivery_date`.
-4. Klik **Genereer planning**.
-5. Open **Route** en klik per dag **Optimaliseer route**.
-6. Stuur de planning via **Naar telefoon** naar iPhone/Android.
-7. Gebruik onderweg Route, Navigeren, Bellen en Bezocht.
-8. Exporteer het resultaat naar Excel wanneer nodig.
+## Workflow
+1. Excel importeren.
+2. **Genereer planning** zet afleveringen op de juiste dagen.
+3. **Optimaliseer route** zoekt de snelste/logische stopvolgorde voor de gekozen dag.
+4. Op telefoon gebruik je het Route-scherm voor navigatie en bezoekstatus.
 
-## Schoonmaak v1.0.18
-- oud ongebruikt `planyx-brand.jpeg` verwijderd;
-- oude `Installeer app`-knop en bijbehorende JavaScript verwijderd;
-- splash gebruikt uitsluitend `assets/gj-motion-logo.png`;
-- splashlogo heeft een nieuwe bestandsnaam én versieparameter zodat een oud logo niet kan blijven hangen;
-- service worker verwijderd alle eerdere `planyx-lite-*` caches bij activatie;
-- HTML wordt network-first geladen zodat nieuwe GitHub-deployments direct worden opgepakt;
-- app controleert bij openen actief op een nieuwe service worker;
-- dubbele/oude changelogregels verwijderd.
+## Routeherstel v1.0.19
+- Oude geocode- en matrixcache wordt eenmalig ongeldig gemaakt.
+- TomTom-geocoding gebruikt waar beschikbaar een routing/entrypoint in plaats van alleen het middenpunt van een adres.
+- Matrix-aanvragen blijven bewust onder 100 cellen per aanvraag voor betrouwbaardere verwerking.
+- Mislukte Matrix-cellen stoppen de optimalisatie niet meer direct.
+- Ontbrekende verbindingen worden automatisch opnieuw berekend via de normale TomTom Routing API.
+- Alleen als ook die fallback niet lukt, gebruikt de optimizer een zware schatting en controleert daarna altijd de complete eindroute bij TomTom.
+- Definitieve routes worden op historische reistijd gecontroleerd, zodat toekomstige planningsdagen niet afhankelijk zijn van toevallig live verkeer op het moment van optimaliseren.
 
-De PWA blijft installeerbaar via de browser zelf (bijvoorbeeld **Zet op beginscherm** op iPhone of **App installeren** in Chrome), maar Planyx-lite toont daarvoor geen eigen knop meer.
+## Importkolommen
+`d_name`, `d_phone`, `d_address1`, `d_zipcode`, `d_city`, `d_country`, `delivery_date`

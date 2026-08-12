@@ -4,12 +4,25 @@ const $=id=>document.getElementById(id);
 const STORE='planyx-lite-state-v1';
 const PREF='planyx-lite-prefs-v1';
 const REQUIRED=['d_name','d_phone','d_address1','d_zipcode','d_city','d_country','delivery_date'];
+const ROUTING_DATA_VERSION=3;
 let movingStopId=null, transferLink='', currentView='';
 let state=loadState();
 let prefs=loadPrefs();
 
-function defaultState(){return {version:1,sourceName:'',startAddress:'',endAddress:'',sameEnd:true,startPoint:null,endPoint:null,stops:[],days:{},selectedDay:'',planningReady:false,updatedAt:null}}
-function loadState(){try{return {...defaultState(),...JSON.parse(localStorage.getItem(STORE)||'{}')}}catch{return defaultState()}}
+function defaultState(){return {version:1,routingDataVersion:ROUTING_DATA_VERSION,sourceName:'',startAddress:'',endAddress:'',sameEnd:true,startPoint:null,endPoint:null,stops:[],days:{},selectedDay:'',planningReady:false,updatedAt:null}}
+function loadState(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(STORE)||'{}'),merged={...defaultState(),...raw};
+    if((Number(raw.routingDataVersion)||0)<ROUTING_DATA_VERSION){
+      merged.routingDataVersion=ROUTING_DATA_VERSION;merged.startPoint=null;merged.endPoint=null;
+      merged.stops=(Array.isArray(merged.stops)?merged.stops:[]).map(s=>({...s,position:null,legKm:null,legMin:null}));
+      for(const d of Object.keys(merged.days||{})){const day=merged.days[d]||{};merged.days[d]={...day,summary:day.summary?{...day.summary,km:null,min:null,live:false,optimized:false,changed:false}:day.summary};}
+      try{localStorage.removeItem('planyx-lite-geocache-v2');localStorage.removeItem('planyx-lite-matrix-cache-v1')}catch{}
+      localStorage.setItem(STORE,JSON.stringify(merged));
+    }
+    return merged;
+  }catch{return defaultState()}
+}
 function saveState(){state.updatedAt=new Date().toISOString();localStorage.setItem(STORE,JSON.stringify(state))}
 function loadPrefs(){try{return {tomtomKey:'',navApp:'google',startAddress:'',endAddress:'',sameEnd:true,...JSON.parse(localStorage.getItem(PREF)||'{}')}}catch{return {tomtomKey:'',navApp:'google',startAddress:'',endAddress:'',sameEnd:true}}}
 function savePrefs(){localStorage.setItem(PREF,JSON.stringify(prefs))}
@@ -36,12 +49,12 @@ function optimizeStops(stops,start,end){
   while(improved&&loops++<50){improved=false;let base=routeDistance(order,start,end);for(let i=0;i<order.length-1;i++){for(let j=i+1;j<order.length;j++){const cand=[...order.slice(0,i),...order.slice(i,j+1).reverse(),...order.slice(j+1)];const nd=routeDistance(cand,start,end);if(nd+0.05<base){order.splice(0,order.length,...cand);base=nd;improved=true}}}}
   return order;
 }
-const GEO_CACHE='planyx-lite-geocache-v2';
-const MATRIX_CACHE='planyx-lite-matrix-cache-v1';
+const GEO_CACHE='planyx-lite-geocache-v3';
+const MATRIX_CACHE='planyx-lite-matrix-cache-v2';
 let lastTomTomCall=0;
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 function loadGeoCache(){try{return JSON.parse(localStorage.getItem(GEO_CACHE)||'{}')}catch{return {}}}
-function saveGeoCache(cache){try{localStorage.setItem(GEO_CACHE,JSON.stringify(cache))}catch{}}
+function saveGeoCache(cache){try{const entries=Object.entries(cache).slice(-500);localStorage.setItem(GEO_CACHE,JSON.stringify(Object.fromEntries(entries)))}catch{}}
 function normalizeText(v){return String(v??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ')}
 function normalizePostal(v){return String(v??'').toUpperCase().replace(/\s+/g,'')}
 async function tomtomJson(url,{retries=12,fetchOptions={}}={}){
@@ -67,33 +80,60 @@ function scoreGeocodeResult(result,expected={}){
   if(wantedStreet&&gotStreet.includes(wantedStreet.split(/\s+\d/)[0]))score+=10;
   return score;
 }
-async function geocodeAddress(query,country,key,expected={}){
-  const cache=loadGeoCache(),cacheKey=`${countryCode(country)}|${normalizeText(query)}|${normalizePostal(expected.postcode)}|${normalizeText(expected.city)}`;if(cache[cacheKey])return cache[cacheKey];
+function routingPosition(result){
+  const eps=Array.isArray(result?.entryPoints)?result.entryPoints:(Array.isArray(result?.entrypoints)?result.entrypoints:[]);
+  const ep=eps.find(x=>x?.preferredRouting===true)||eps.find(x=>Array.isArray(x?.usage)&&x.usage.some(u=>String(u).toLowerCase()==='routing'))||eps.find(x=>Array.isArray(x?.functions)&&x.functions.some(f=>/routing|delivery|parking/i.test(String(f))))||eps[0];
+  const p=ep?.position||result?.position;return p&&Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lon))?{lat:Number(p.lat),lon:Number(p.lon)}:null;
+}
+async function geocodeAddress(query,country,key,expected={},opts={}){
+  const force=!!opts.force,cache=loadGeoCache(),cacheKey=`${countryCode(country)}|${normalizeText(query)}|${normalizePostal(expected.postcode)}|${normalizeText(expected.city)}`;if(!force&&cache[cacheKey])return cache[cacheKey];
   const u=new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);u.searchParams.set('key',key);u.searchParams.set('limit','5');const cc=countryCode(country);if(cc)u.searchParams.set('countrySet',cc);const j=await tomtomJson(u);const results=Array.isArray(j.results)?j.results:[];if(!results.length)throw new Error(`Adres niet gevonden: ${query}`);
-  const best=[...results].sort((a,b)=>scoreGeocodeResult(b,expected)-scoreGeocodeResult(a,expected))[0],p=best?.position;if(!p)throw new Error(`Adres niet gevonden: ${query}`);
-  const found={lat:Number(p.lat),lon:Number(p.lon),freeform:best?.address?.freeformAddress||query,postalCode:best?.address?.postalCode||'',city:best?.address?.municipality||best?.address?.localName||''};cache[cacheKey]=found;saveGeoCache(cache);return found
+  const best=[...results].sort((a,b)=>scoreGeocodeResult(b,expected)-scoreGeocodeResult(a,expected))[0],p=routingPosition(best);if(!p)throw new Error(`Adres niet gevonden: ${query}`);
+  const found={lat:p.lat,lon:p.lon,freeform:best?.address?.freeformAddress||query,postalCode:best?.address?.postalCode||'',city:best?.address?.municipality||best?.address?.localName||'',routingEntryPoint:!!((best?.entryPoints||best?.entrypoints||[]).length)};cache[cacheKey]=found;saveGeoCache(cache);return found
 }
 function matrixCacheKey(points){return points.map(p=>`${Number(p.lat).toFixed(5)},${Number(p.lon).toFixed(5)}`).join('|')}
 function loadMatrixCache(){try{return JSON.parse(localStorage.getItem(MATRIX_CACHE)||'{}')}catch{return {}}}
 function saveMatrixCache(cache){try{const entries=Object.entries(cache).sort((a,b)=>(b[1]?.ts||0)-(a[1]?.ts||0)).slice(0,8);localStorage.setItem(MATRIX_CACHE,JSON.stringify(Object.fromEntries(entries)))}catch{}}
-async function buildTravelMatrix(points,key,onProgress=()=>{}){
-  const n=points.length;if(n<2)throw new Error('Te weinig punten voor routeoptimalisatie.');
-  if(n>50)throw new Error('Voor de nauwkeurige routeoptimalisatie ondersteunt Planyx-lite maximaal 48 afleverstops per dag. Splits deze dag op.');
-  const cache=loadMatrixCache(),ck=matrixCacheKey(points);if(cache[ck]?.times?.length===n){onProgress('Reistijdmatrix uit cache laden…');return cache[ck]}
-  const times=Array.from({length:n},()=>Array(n).fill(Infinity)),distances=Array.from({length:n},()=>Array(n).fill(Infinity));for(let i=0;i<n;i++){times[i][i]=0;distances[i][i]=0}
-  const maxCells=200,chunkSize=Math.max(1,Math.floor(maxCells/n));let requestNo=0,totalRequests=Math.ceil(n/chunkSize);
+function matrixFailure(cell,gi,dj){const de=cell?.detailedError||{},inner=de.innerError||de.details?.[0]||{};return {i:gi,j:dj,code:String(inner.code||de.code||'UNKNOWN'),message:String(inner.message||de.message||'Onbekende matrixfout')}}
+async function requestTravelMatrix(points,key,onProgress=()=>{}){
+  const n=points.length,times=Array.from({length:n},()=>Array(n).fill(Infinity)),distances=Array.from({length:n},()=>Array(n).fill(Infinity)),failures=[];for(let i=0;i<n;i++){times[i][i]=0;distances[i][i]=0}
+  // Keep every synchronous request below 100 cells. TomTom gives this size the least restrictive processing limits.
+  const maxCells=90,chunkSize=Math.max(1,Math.floor(maxCells/n));let requestNo=0,totalRequests=Math.ceil(n/chunkSize);
   for(let from=0;from<n;from+=chunkSize){const originIdx=[];for(let i=from;i<Math.min(n,from+chunkSize);i++)originIdx.push(i);requestNo++;onProgress(`Reistijden ophalen ${requestNo}/${totalRequests}…`);
     const body={origins:originIdx.map(i=>({point:{latitude:points[i].lat,longitude:points[i].lon}})),destinations:points.map(p=>({point:{latitude:p.lat,longitude:p.lon}})),options:{departAt:'any',traffic:'historical',routeType:'fastest',travelMode:'car'}};
     const u=new URL('https://api.tomtom.com/routing/matrix/2');u.searchParams.set('key',key);
     const j=await tomtomJson(u,{fetchOptions:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}});
-    for(const cell of (j.data||[])){const gi=originIdx[Number(cell.originIndex)],dj=Number(cell.destinationIndex);if(!Number.isInteger(gi)||!Number.isInteger(dj)||gi<0||dj<0||dj>=n)continue;const sum=cell.routeSummary;if(sum){times[gi][dj]=Number(sum.travelTimeInSeconds);distances[gi][dj]=Number(sum.lengthInMeters)}}
+    for(const cell of (j.data||[])){const gi=originIdx[Number(cell.originIndex)],dj=Number(cell.destinationIndex);if(!Number.isInteger(gi)||!Number.isInteger(dj)||gi<0||dj<0||dj>=n)continue;const sum=cell.routeSummary;if(sum&&Number.isFinite(Number(sum.travelTimeInSeconds))){times[gi][dj]=Number(sum.travelTimeInSeconds);distances[gi][dj]=Number(sum.lengthInMeters)}else if(gi!==dj)failures.push(matrixFailure(cell,gi,dj))}
   }
-  const missing=[];for(let i=0;i<n;i++)for(let j=0;j<n;j++)if(i!==j&&!Number.isFinite(times[i][j]))missing.push([i,j]);
-  if(missing.length){throw new Error(`TomTom kon ${missing.length} verbinding(en) in de reistijdmatrix niet berekenen. Controleer de adressen en probeer opnieuw.`)}
-  const result={times,distances,ts:Date.now()};cache[ck]=result;saveMatrixCache(cache);return result
+  const seen=new Set(failures.map(f=>`${f.i}|${f.j}`));for(let i=0;i<n;i++)for(let j=0;j<n;j++)if(i!==j&&!Number.isFinite(times[i][j])&&!seen.has(`${i}|${j}`))failures.push({i,j,code:'MISSING',message:'Geen matrixresultaat ontvangen'});
+  return {times,distances,failures};
+}
+async function calculatePairRoute(a,b,key){
+  const locs=`${a.lat},${a.lon}:${b.lat},${b.lon}`,u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('routeType','fastest');u.searchParams.set('traffic','false');u.searchParams.set('computeTravelTimeFor','all');u.searchParams.set('routeRepresentation','summaryOnly');const j=await tomtomJson(u,{retries:6});const sum=j.routes?.[0]?.summary;if(!sum)throw new Error('Geen route gevonden');const time=Number(sum.historicTrafficTravelTimeInSeconds??sum.travelTimeInSeconds),distance=Number(sum.lengthInMeters);if(!Number.isFinite(time)||!Number.isFinite(distance))throw new Error('Geen bruikbare routesamenvatting');return {time,distance};
+}
+function estimateMissingCell(a,b){const km=hav(a,b),sec=Math.max(60,(km/65)*3600*1.25+900);return {time:sec,distance:km*1000*1.2}}
+async function buildTravelMatrix(points,key,onProgress=()=>{},labels=[]){
+  const n=points.length;if(n<2)throw new Error('Te weinig punten voor routeoptimalisatie.');if(n>50)throw new Error('Voor de nauwkeurige routeoptimalisatie ondersteunt Planyx-lite maximaal 48 afleverstops per dag. Splits deze dag op.');
+  const cache=loadMatrixCache(),ck=matrixCacheKey(points);if(cache[ck]?.times?.length===n){onProgress('Reistijdmatrix uit cache laden…');return cache[ck]}
+  const raw=await requestTravelMatrix(points,key,onProgress);let failures=raw.failures;
+  if(failures.length){
+    const unique=[];const seen=new Set();for(const f of failures){const k=`${f.i}|${f.j}`;if(!seen.has(k)){seen.add(k);unique.push(f)}}failures=unique;
+    onProgress(`${failures.length} matrixverbinding${failures.length===1?'':'en'} automatisch herstellen…`);
+    const unresolved=[];let done=0;
+    for(const f of failures){done++;onProgress(`Ontbrekende verbindingen herstellen ${done}/${failures.length}…`);try{const pair=await calculatePairRoute(points[f.i],points[f.j],key);raw.times[f.i][f.j]=pair.time;raw.distances[f.i][f.j]=pair.distance}catch(err){unresolved.push({...f,fallbackError:err?.message||String(err)})}}
+    if(unresolved.length){
+      // Do not abort the entire day. Give unresolved edges a large estimate so the optimizer avoids them whenever possible;
+      // the final complete route is always checked by Calculate Route before we accept it.
+      for(const f of unresolved){const est=estimateMissingCell(points[f.i],points[f.j]);raw.times[f.i][f.j]=est.time;raw.distances[f.i][f.j]=est.distance}
+      const involved=[...new Set(unresolved.flatMap(f=>[f.i,f.j]))];const names=involved.map(i=>labels[i]).filter(Boolean).slice(0,6);
+      raw.warning=names.length?`TomTom Matrix kon ${unresolved.length} verbinding(en) niet rechtstreeks berekenen. Planyx-lite heeft deze via veilige schattingen omzeild en controleert de eindroute apart. Betrokken punten: ${names.join(', ')}.`:`TomTom Matrix kon ${unresolved.length} verbinding(en) niet rechtstreeks berekenen; de eindroute wordt apart gecontroleerd.`;
+      raw.unresolved=unresolved;
+    }else raw.unresolved=[];
+  }else raw.unresolved=[];
+  const result={times:raw.times,distances:raw.distances,unresolved:raw.unresolved||[],warning:raw.warning||'',ts:Date.now()};if(!result.unresolved.length){cache[ck]=result;saveMatrixCache(cache)}return result;
 }
 function pathCost(order,times){if(!order.length)return times[0][times.length-1];let total=times[0][order[0]+1];for(let i=1;i<order.length;i++)total+=times[order[i-1]+1][order[i]+1];total+=times[order[order.length-1]+1][times.length-1];return total}
-function greedyOrder(stopCount,times,forcedFirst=null){const left=new Set(Array.from({length:stopCount},(_,i)=>i)),order=[];let node=0;if(forcedFirst!=null&&left.has(forcedFirst)){order.push(forcedFirst);left.delete(forcedFirst);node=forcedFirst+1}while(left.size){let best=null,bestCost=Infinity;for(const s of left){const direct=times[node][s+1],toEnd=times[s+1][times.length-1];const score=direct+(left.size===1?toEnd:toEnd*.03);if(score<bestCost){bestCost=score;best=s}}if(best==null)break;order.push(best);left.delete(best);node=best+1}return order}
+function greedyOrder(stopCount,times,forcedFirst=null){const left=new Set(Array.from({length:stopCount},(_,i)=>i)),order=[];let node=0;if(forcedFirst!=null&&left.has(forcedFirst)){order.push(forcedFirst);left.delete(forcedFirst);node=forcedFirst+1}while(left.size){let best=null,bestCost=Infinity;for(const s of left){const direct=times[node][s+1],toEnd=times[s+1][times.length-1];const score=direct+(left.size===1?toEnd:toEnd*.03);if(score<bestCost){bestCost=score;best=s}}if(best==null){best=left.values().next().value}order.push(best);left.delete(best);node=best+1}return order}
 function improveMatrixOrder(seed,times){let best=[...seed],bestCost=pathCost(best,times);const n=best.length;for(let pass=0;pass<28;pass++){let move=null,moveCost=bestCost;
     for(let i=0;i<n;i++)for(let j=0;j<n;j++){if(i===j)continue;const cand=[...best],x=cand.splice(i,1)[0];cand.splice(j,0,x);const c=pathCost(cand,times);if(c+0.5<moveCost){move=cand;moveCost=c}}
     for(let i=0;i<n-1;i++)for(let j=i+1;j<n;j++){const cand=[...best];[cand[i],cand[j]]=[cand[j],cand[i]];const c=pathCost(cand,times);if(c+0.5<moveCost){move=cand;moveCost=c}}
@@ -102,13 +142,26 @@ function improveMatrixOrder(seed,times){let best=[...seed],bestCost=pathCost(bes
   }return {order:best,cost:bestCost}}
 function findBestMatrixOrder(stopCount,times){const original=Array.from({length:stopCount},(_,i)=>i),seeds=[original,greedyOrder(stopCount,times)];for(let first=0;first<stopCount;first++)seeds.push(greedyOrder(stopCount,times,first));const unique=new Map;for(const seed of seeds){if(seed.length===stopCount)unique.set(seed.join(','),seed)}const ranked=[...unique.values()].map(order=>({order,cost:pathCost(order,times)})).sort((a,b)=>a.cost-b.cost).slice(0,8);let best={order:original,cost:pathCost(original,times)};for(const seed of ranked){const improved=improveMatrixOrder(seed.order,times);if(improved.cost<best.cost)best=improved}return {original,originalCost:pathCost(original,times),...best}}
 async function calculateFixedRoute(start,ordered,end,key,onProgress=()=>{}){
-  onProgress('Definitieve route bij TomTom berekenen…');const points=[start,...ordered.map(s=>s.position),end],locs=points.map(p=>`${p.lat},${p.lon}`).join(':');const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','true');u.searchParams.set('routeType','fastest');u.searchParams.set('routeRepresentation','summaryOnly');const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('TomTom kon de definitieve route niet berekenen.');return {summary:route.summary,legs:route.legs||[]}}
-async function optimizeRouteByTravelTime(start,stops,end,key,onProgress=()=>{}){
+  onProgress('Definitieve route bij TomTom controleren…');const points=[start,...ordered.map(s=>s.position),end],locs=points.map(p=>`${p.lat},${p.lon}`).join(':');const u=new URL(`https://api.tomtom.com/routing/1/calculateRoute/${locs}/json`);u.searchParams.set('key',key);u.searchParams.set('travelMode','car');u.searchParams.set('traffic','false');u.searchParams.set('routeType','fastest');u.searchParams.set('computeTravelTimeFor','all');u.searchParams.set('routeRepresentation','summaryOnly');const j=await tomtomJson(u);const route=j.routes?.[0];if(!route?.summary)throw new Error('TomTom kon de definitieve route niet berekenen.');return {summary:route.summary,legs:route.legs||[],compareSeconds:Number((route.summary.historicTrafficTravelTimeInSeconds??route.summary.travelTimeInSeconds)||0)}}
+async function optimizeRouteByTravelTime(start,stops,end,key,onProgress=()=>{},labels=[]){
   if(!start||!end)throw new Error('Start- of eindpunt ontbreekt.');if(!stops.length)return {ordered:[],summary:{lengthInMeters:0,travelTimeInSeconds:0},legs:[],changed:false,savedSeconds:0,beforeSummary:null};
-  const points=[start,...stops.map(s=>s.position),end];onProgress('Echte reistijden tussen alle stops bepalen…');const matrix=await buildTravelMatrix(points,key,onProgress);onProgress('Beste stopvolgorde zoeken…');const best=findBestMatrixOrder(stops.length,matrix.times);const candidate=best.order.map(i=>stops[i]);const same=best.order.every((v,i)=>v===i);
-  onProgress('Huidige route controleren…');const before=await calculateFixedRoute(start,stops,end,key,onProgress);if(same)return {ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost};
-  onProgress('Geoptimaliseerde route controleren…');const after=await calculateFixedRoute(start,candidate,end,key,onProgress);const beforeSec=Number(before.summary.travelTimeInSeconds||0),afterSec=Number(after.summary.travelTimeInSeconds||0),beforeM=Number(before.summary.lengthInMeters||0),afterM=Number(after.summary.lengthInMeters||0);const faster=afterSec<beforeSec||afterSec===beforeSec&&afterM<beforeM;
-  return faster?{ordered:candidate,summary:after.summary,legs:after.legs,changed:true,savedSeconds:Math.max(0,beforeSec-afterSec),beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost}:{ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost}
+  const points=[start,...stops.map(s=>s.position),end];onProgress('Echte reistijden tussen alle stops bepalen…');const matrix=await buildTravelMatrix(points,key,onProgress,labels);onProgress('Beste stopvolgorde zoeken…');const best=findBestMatrixOrder(stops.length,matrix.times);const candidate=best.order.map(i=>stops[i]);const same=best.order.every((v,i)=>v===i);
+  onProgress('Huidige route controleren…');let before;try{before=await calculateFixedRoute(start,stops,end,key,onProgress)}catch(e){before=null}
+  if(same&&before)return {ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost,warning:matrix.warning};
+  onProgress('Geoptimaliseerde route controleren…');let after;try{after=await calculateFixedRoute(start,candidate,end,key,onProgress)}catch(e){after=null}
+  if(!after&&before)return {ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost,warning:matrix.warning};
+  if(!after&&!before){const extra=matrix.warning?` ${matrix.warning}`:'';throw new Error(`TomTom kon ook na herstel geen complete autoroute over alle adressen maken.${extra}`)}
+  if(after&&!before)return {ordered:candidate,summary:after.summary,legs:after.legs,changed:!same,savedSeconds:0,beforeSummary:null,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost,warning:matrix.warning};
+  const beforeSec=Number(before.compareSeconds||before.summary.travelTimeInSeconds||0),afterSec=Number(after.compareSeconds||after.summary.travelTimeInSeconds||0),beforeM=Number(before.summary.lengthInMeters||0),afterM=Number(after.summary.lengthInMeters||0);const faster=afterSec<beforeSec||afterSec===beforeSec&&afterM<beforeM;
+  return faster?{ordered:candidate,summary:after.summary,legs:after.legs,changed:!same,savedSeconds:Math.max(0,beforeSec-afterSec),beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost,warning:matrix.warning}:{ordered:[...stops],summary:before.summary,legs:before.legs,changed:false,savedSeconds:0,beforeSummary:before.summary,matrixBeforeSeconds:best.originalCost,matrixAfterSeconds:best.cost,warning:matrix.warning}
+}
+function stopRouteMeta(s){return {label:s.d_name||addressOf(s),query:addressOf(s),country:s.d_country,expected:{postcode:s.d_zipcode,city:s.d_city,street:s.d_address1}}}
+async function ensureCoordinatesForDay(date,key,onProgress=()=>{}){
+  const dayStops=state.stops.filter(s=>s.delivery_date===date);let total=(state.startPoint?0:1)+(state.endPoint?0:(state.sameEnd&&state.startPoint?0:1))+dayStops.filter(s=>!s.position).length,done=0;
+  if(!state.startPoint){onProgress(`Routepunten controleren ${++done}/${Math.max(1,total)}…`);state.startPoint=await geocodeAddress(state.startAddress,'',key,{street:state.startAddress})}
+  if(!state.endPoint){if(state.sameEnd)state.endPoint=state.startPoint;else{onProgress(`Routepunten controleren ${++done}/${Math.max(1,total)}…`);state.endPoint=await geocodeAddress(state.endAddress,'',key,{street:state.endAddress})}}
+  for(const s of dayStops.filter(s=>!s.position)){onProgress(`Routepunten controleren ${++done}/${Math.max(1,total)}…`);const m=stopRouteMeta(s);s.position=await geocodeAddress(m.query,m.country,key,m.expected)}
+  state.routingDataVersion=ROUTING_DATA_VERSION;saveState();
 }
 function setBusy(msg){$('generateBtn').disabled=true;$('generateBtn').textContent=msg}
 function clearBusy(){$('generateBtn').disabled=false;$('generateBtn').textContent='Genereer planning'}
@@ -178,15 +231,17 @@ async function generateAll(){
 }
 
 async function optimizeDay(date,key,onProgress=()=>{}){
-  const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position).sort((a,b)=>(a.order||9999)-(b.order||9999));
   if(!key)throw new Error('Vul op dit apparaat eerst de TomTom API-key in via Import / Database.');
-  if(!remaining.length){return {changed:false,savedSeconds:0,beforeSummary:null,afterSummary:null}}
+  await ensureCoordinatesForDay(date,key,onProgress);
+  const all=state.stops.filter(s=>s.delivery_date===date),visited=all.filter(s=>s.visited).sort((a,b)=>a.order-b.order),remaining=all.filter(s=>!s.visited&&s.position).sort((a,b)=>(a.order||9999)-(b.order||9999));
+  if(!remaining.length){return {changed:false,savedSeconds:0,beforeSummary:null,afterSummary:null,warning:''}}
   const routeStart=visited.length?visited[visited.length-1].position:state.startPoint;if(!routeStart||!state.endPoint)throw new Error('Start- of eindpunt ontbreekt. Genereer de planning opnieuw.');
-  const result=await optimizeRouteByTravelTime(routeStart,remaining,state.endPoint,key,onProgress),combined=[...visited,...result.ordered];combined.forEach((s,i)=>s.order=i+1);
+  const startLabel=visited.length?(visited[visited.length-1].d_name||addressOf(visited[visited.length-1])):'Startadres',labels=[startLabel,...remaining.map(s=>s.d_name||addressOf(s)),'Eindadres'];
+  const result=await optimizeRouteByTravelTime(routeStart,remaining,state.endPoint,key,onProgress,labels),combined=[...visited,...result.ordered];combined.forEach((s,i)=>s.order=i+1);
   result.ordered.forEach((s,i)=>{const leg=result.legs?.[i]?.summary;s.legKm=leg?Number(leg.lengthInMeters||0)/1000:null;s.legMin=leg?Number(leg.travelTimeInSeconds||0)/60:null});
   const totalKm=Number(result.summary?.lengthInMeters||0)/1000,totalMin=Number(result.summary?.travelTimeInSeconds||0)/60,beforeKm=Number(result.beforeSummary?.lengthInMeters||0)/1000,beforeMin=Number(result.beforeSummary?.travelTimeInSeconds||0)/60;
   state.days[date]={date,generated:true,summary:{km:totalKm,min:totalMin,live:true,optimized:true,changed:result.changed,beforeKm:Number.isFinite(beforeKm)?beforeKm:null,beforeMin:Number.isFinite(beforeMin)?beforeMin:null,savedMin:Number(result.savedSeconds||0)/60,algorithm:'tomtom-matrix-travel-time',updatedAt:new Date().toISOString()}};
-  return {changed:result.changed,savedSeconds:result.savedSeconds,beforeSummary:result.beforeSummary,afterSummary:result.summary}
+  return {changed:result.changed,savedSeconds:result.savedSeconds,beforeSummary:result.beforeSummary,afterSummary:result.summary,warning:result.warning||''}
 }
 async function reoptimizeCurrent(){
   const d=state.selectedDay;if(!d)return;
@@ -197,6 +252,7 @@ async function reoptimizeCurrent(){
     const saved=Math.round(Number(outcome.savedSeconds||0)/60);
     if(beforeOrder!==afterOrder&&outcome.changed)toast(saved>0?`Route herschikt · ongeveer ${saved} min sneller.`:`Route is herschikt en geoptimaliseerd.`);
     else toast('Geen snellere volgorde gevonden; huidige route is behouden.');
+    if(outcome.warning)setTimeout(()=>alert(outcome.warning),350);
   }catch(e){console.error(e);alert(e.message||String(e))}finally{btn.disabled=false;btn.textContent=oldText}
 }
 
